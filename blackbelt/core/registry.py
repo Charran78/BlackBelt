@@ -39,4 +39,8 @@ TOOLS = {
         "module": "blackbelt.tools.obsidian",
         "description": "Lectura/escritura en boveda Obsidian",
     },
+    "git": {
+        "module": "blackbelt.tools.git",
+        "description": "Atajos de Git: status, sync, push, branch",
+    },
 }
