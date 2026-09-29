@@ -2,6 +2,9 @@
 
 **El cinturón de herramientas CLI local-first.**
 
+
+![Carátula](images/BlackBelt.jpg)
+
 > *"El cinturón es más útil que el cuchillo. El cuchillo corta. El cinturón transporta."*
 
 BlackBelt no es un producto. Es un cinturón. Un taller de herramientas que vive en tu terminal, unifica tus scripts dispersos bajo un único punto de entrada, y actúa como mentor mientras aprendes Linux y Python.
