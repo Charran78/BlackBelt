@@ -1,0 +1,99 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Entornos virtuales
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Testing / coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ============================================================
+# BlackBelt — config local y datos de usuario
+# ============================================================
+# Variables de entorno (contienen rutas y config personal)
+.env
+.env.local
+.env.*.local
+
+# Config YAML local (por si algún día vive en el repo durante desarrollo)
+config.yaml
+config.local.yaml
+
+# Log de auditoría (datos de uso personal)
+audit.log
+*.audit.log
+
+# Cache de explicaciones (cuando lo implementemos)
+*cache*.json
+!package.json
+
+# ============================================================
+# Editores / IDEs
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ============================================================
+# Sistema operativo
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# Excepciones (cosas que SÍ queremos versionar)
+# ============================================================
+!.env.example
+!README.md
+!pyproject.toml
