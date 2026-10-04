@@ -1,5 +1,4 @@
 import time
-import shutil
 from collections import deque
 
 import psutil
@@ -20,7 +19,7 @@ HISTORY_SIZE = 60
 REFRESH_SECONDS = 1.0
 
 
-def run(args=None):
+def run(args: list[str] | str | None = None) -> None:
     """Snapshot o monitor en vivo. Uso: blackbelt run graphics [snapshot|monitor]"""
     args = executor.args_to_str(args)
     parts = args.split()
@@ -40,7 +39,7 @@ def run(args=None):
 # SNAPSHOT (sin cambios — usa psutil y Rich, no plotext)
 # ============================================================
 
-def snapshot():
+def snapshot() -> None:
     table = Table(title="Estado del sistema")
     table.add_column("Recurso", style="cyan")
     table.add_column("Valor", style="magenta")
@@ -62,7 +61,7 @@ def snapshot():
                 "Swap",
                 f"{swap.used / 1024**3:.2f} / {swap.total / 1024**3:.2f} GB  ({swap.percent:.1f}%)",
             )
-    except Exception:
+    except (OSError, psutil.Error, NotImplementedError):
         pass
 
     for part in psutil.disk_partitions(all=False):
@@ -87,7 +86,7 @@ def snapshot():
             if entries:
                 t = entries[0]
                 table.add_row(f"Temp {name}", f"{t.current:.0f}°C")
-    except Exception:
+    except (OSError, psutil.Error, NotImplementedError):
         pass
 
     console.print(table)
@@ -97,7 +96,7 @@ def snapshot():
 # MONITOR EN VIVO — API plotext 6.1.0
 # ============================================================
 
-def monitor():
+def monitor() -> None:
     """Bucle en vivo con gráficas de CPU y RAM. Salir con Ctrl+C."""
     if not HAS_PLOTEXT:
         console.print("[red]plotext no está instalado.[/]")
@@ -168,9 +167,9 @@ def monitor():
             frame += 1
             time.sleep(REFRESH_SECONDS)
 
-        except KeyboardInterrupt:
-            print("\033[H\033[J", end="")  # limpiar pantalla
-            console.print("[dim]Monitor detenido.[/]")
+    except KeyboardInterrupt:
+        print("\033[H\033[J", end="")  # limpiar pantalla
+        console.print("[dim]Monitor detenido.[/]")
 
 
 if __name__ == "__main__":

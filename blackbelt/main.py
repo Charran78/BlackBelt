@@ -19,8 +19,8 @@ def env():
     """Detecta y muestra el entorno actual."""
     info = environment.summary()
     table = Table(title="Entorno detectado")
-    table.add_column("Clave", style="cyan")
-    table.add_column("Valor", style="magenta")
+    table.add_column("Clave")
+    table.add_column("Valor")
     for k, v in info.items():
         table.add_row(k, str(v))
     console.print(table)
@@ -30,16 +30,24 @@ def env():
 def tools():
     """Lista las herramientas registradas."""
     table = Table(title="Herramientas registradas")
-    table.add_column("Nombre", style="cyan")
-    table.add_column("Descripcion", style="magenta")
+    table.add_column("Nombre")
+    table.add_column("Descripcion")
     for name, meta in registry.TOOLS.items():
         table.add_row(name, meta["description"])
     console.print(table)
 
 
 @app.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
-def run(ctx: typer.Context, tool: str, args: list[str] = typer.Argument(None)):
+def run(
+    ctx: typer.Context,
+    tool: str | None = typer.Argument(None),
+    args: list[str] = typer.Argument(None),
+):
     """Ejecuta una herramienta. Ej: blackbelt run linux info"""
+    if tool is None:
+        tools()
+        console.print("\nUso: blackbelt run <herramienta> argumentos...")
+        return
     executor.run_tool(tool, args or [])
 
 

@@ -20,6 +20,9 @@ def run_tool(tool_name: str, args=None):
         args = []
 
     if tool_name not in registry.TOOLS:
+        if tool_name == "env":
+            console.print("`env` es un comando principal. Usa: blackbelt env")
+            return
         console.print(f"[red]Herramienta {tool_name} no encontrada.[/]")
         return
 

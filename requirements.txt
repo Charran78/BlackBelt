@@ -1,0 +1,28 @@
+# BlackBelt - dependencias
+# Generado a partir de pyproject.toml
+# Instalación: pip install -r requirements.txt
+
+# CLI y presentación
+typer>=0.12
+rich>=13.0
+
+# Configuración
+pyyaml>=6.0
+python-dotenv>=1.0
+keyring>=25.0
+
+# IA local
+ollama>=0.4
+
+# Red / utilidades
+requests>=2.31
+
+# Sistema
+psutil>=5.9
+
+# Gráficas en terminal
+plotext>=5.3
+
+# Aplicaciones web locales
+fastapi>=0.110
+uvicorn>=0.27

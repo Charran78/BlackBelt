@@ -2,7 +2,6 @@
 name = "blackbelt"
 version = "0.1.0"
 description = "El cinturon de herramientas CLI local-first"
-authors = [{ name = "Pedro Mencias Garcia" }]
 dependencies = [
     "typer>=0.12",
     "rich>=13.0",
@@ -13,6 +12,8 @@ dependencies = [
     "requests>=2.31",
     "psutil>=5.9",
     "plotext>=5.3",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
 ]
 
 [project.scripts]
@@ -21,3 +22,17 @@ blackbelt = "blackbelt.__main__:main"
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["blackbelt*"]
+exclude = ["images*", "docs*", "tests*", "gg*", "otros*"]
+
+[tool.setuptools.package-data]
+blackbelt = [
+    "data/*.yaml",
+    "data/webapps/*.js",
+    "data/webapps/*/*.js",
+    "data/webapps/*/*.html",
+    "data/webapps/*/*.webmanifest",
+    "data/webapps/*/icons/*.svg",
+]

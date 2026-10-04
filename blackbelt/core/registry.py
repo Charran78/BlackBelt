@@ -3,13 +3,25 @@ TOOLS = {
         "module": "blackbelt.tools.linux_mentor",
         "description": "Mentor Linux: diagnostico y explicacion",
     },
+    "windows": {
+        "module": "blackbelt.tools.windows_mentor",
+        "description": "Mentor Windows: informacion y comandos PowerShell",
+    },
+    "suggest": {
+        "module": "blackbelt.tools.suggest",
+        "description": "Sugiere comandos desde tareas en lenguaje natural",
+    },
+    "apps": {
+        "module": "blackbelt.tools.apps",
+        "description": "Abre SOMA y Ghost Writer en el navegador local",
+    },
     "graphics": {
         "module": "blackbelt.tools.graphics",
         "description": "Graficas de sistema en terminal",
     },
     "email": {
         "module": "blackbelt.tools.email",
-        "description": "Clasificador de correo local",
+        "description": "Triaje local de Gmail en modo solo lectura",
     },
     "obsidian": {
         "module": "blackbelt.tools.obsidian",

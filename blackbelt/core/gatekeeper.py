@@ -5,8 +5,9 @@ Intercepta comandos y operaciones, evalúa su riesgo, y pide confirmación
 humana cuando es necesario. Registra todo en un log de auditoría.
 """
 
-import os
+import platform
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from enum import Enum
@@ -29,6 +30,11 @@ class Risk(str, Enum):
     CRITICAL = "CRITICAL" # rojo
 
 
+class Shell(str, Enum):
+    BASH = "bash"
+    POWERSHELL = "powershell"
+
+
 RISK_STYLE = {
     Risk.SAFE: "bold green",
     Risk.WARN: "bold yellow",
@@ -46,11 +52,13 @@ RISK_ICON = {
 # ANÁLISIS DE RIESGO
 # ============================================================
 
-# Patrones que consideramos CRITICAL
-CRITICAL_PATTERNS = [
+# Los patrones son intencionadamente conservadores: pueden pedir confirmacion
+# para un comando inocuo, pero no deben rebajar una operacion destructiva.
+BASH_CRITICAL_PATTERNS = [
     r"\brm\b",
     r"\bdd\b",
     r"\bmkfs\b",
+    r"\brmdir\b",
     r"\bshred\b",
     r"\bwipefs\b",
     r">\s*/dev/sd",
@@ -60,15 +68,14 @@ CRITICAL_PATTERNS = [
     r"\buserdel\b",
     r"\bgroupdel\b",
     r"\bpasswd\b",
+    r"\bgit\s+reset\b",
     r"\bsudo\b",
     r"\bsu\b",
     r":\(\)\s*\{.*\};:",  # fork bomb clásica
 ]
 
-# Patrones que consideramos WARN
-WARN_PATTERNS = [
-    r">\s*\S+",       # redirección de salida (sobrescribe fichero)
-    r">>\s*\S+",      # append
+BASH_WARN_PATTERNS = [
+    r">{1,2}\s*\S+",
     r"\bmv\b",
     r"\bcp\b",
     r"\btruncate\b",
@@ -80,23 +87,124 @@ WARN_PATTERNS = [
     r"\bpkill\b",
 ]
 
+POWERSHELL_CRITICAL_PATTERNS = [
+    r"(?<![\w-])(?:remove-item|ri|rm|del|erase|rd|rmdir)(?![\w-])",
+    r"(?<![\w-])(?:clear-content|clear-disk|format-disk|format-volume|"
+    r"initialize-disk|remove-itemproperty|remove-partition)(?![\w-])",
+    r"(?<![\w-])(?:invoke-expression|iex|invoke-command)(?![\w-])",
+    r"(?<![\w-])(?:diskpart|bcdedit|stop-computer|restart-computer)(?![\w-])",
+    r"(?<![\w-])shutdown(?:\.exe)?(?![\w-])",
+    r"(?<![\w-])reg(?:\.exe)?\s+delete\b",
+    r"(?<![\w-])(?:cmd(?:\.exe)?|wsl(?:\.exe)?|bash(?:\.exe)?|"
+    r"sh(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?)(?![\w-])",
+    r"(?<!\w)-(?:enc|encodedcommand)(?:\s|$)",
+    r"(?<![\w-])(?:sudo|su)(?![\w-])",
+    r"(?<![\w-])git(?:\.exe)?\s+reset\b",
+]
 
-def analyze_command(cmd: str) -> Risk:
-    """Devuelve el nivel de riesgo estimado para un comando de shell."""
-    for pattern in CRITICAL_PATTERNS:
-        if re.search(pattern, cmd):
+POWERSHELL_WARN_PATTERNS = [
+    r">{1,2}\s*\S+",
+    r"(?<![\w-])(?:set-content|sc|add-content|ac|out-file)(?![\w-])",
+    r"(?<![\w-])(?:new-item|ni|move-item|mi|mv|copy-item|cp|"
+    r"rename-item|mkdir)(?![\w-])",
+    r"(?<![\w-])(?:set-itemproperty|set-executionpolicy|"
+    r"start-process|stop-process|invoke-webrequest)(?![\w-])",
+    r"(?<![\w-])(?:touch|chmod|chown|truncate|kill|pkill)(?![\w-])",
+]
+
+
+def detect_shell() -> Shell:
+    """Selecciona el shell nativo para el sistema operativo actual."""
+    if platform.system() == "Windows":
+        return Shell.POWERSHELL
+    return Shell.BASH
+
+
+def _normalize_shell(shell: Shell | str | None) -> Shell | None:
+    if shell is None:
+        return detect_shell()
+    if isinstance(shell, Shell):
+        return shell
+    if not isinstance(shell, str):
+        return None
+    try:
+        return Shell(shell.lower())
+    except ValueError:
+        return None
+
+
+def analyze_command(cmd: str, shell: Shell | str | None = None) -> Risk:
+    """Estima el riesgo usando las reglas del shell que ejecutara el comando."""
+    selected_shell = _normalize_shell(shell)
+    if selected_shell is None:
+        return Risk.CRITICAL
+
+    if selected_shell is Shell.POWERSHELL:
+        critical_patterns = POWERSHELL_CRITICAL_PATTERNS
+        warn_patterns = POWERSHELL_WARN_PATTERNS
+    else:
+        critical_patterns = BASH_CRITICAL_PATTERNS
+        warn_patterns = BASH_WARN_PATTERNS
+
+    for pattern in critical_patterns:
+        if re.search(pattern, cmd, flags=re.IGNORECASE):
             return Risk.CRITICAL
-    for pattern in WARN_PATTERNS:
-        if re.search(pattern, cmd):
+    for pattern in warn_patterns:
+        if re.search(pattern, cmd, flags=re.IGNORECASE):
             return Risk.WARN
     return Risk.SAFE
+
+
+def _shell_command(cmd: str, shell: Shell) -> list[str]:
+    """Construye argv sin pasar por un shell intermediario de Python."""
+    if shell is Shell.POWERSHELL:
+        executable = (
+            shutil.which("powershell.exe")
+            or shutil.which("powershell")
+            or shutil.which("pwsh.exe")
+            or shutil.which("pwsh")
+        )
+        if executable is None:
+            raise FileNotFoundError(
+                "No se encontro PowerShell (powershell.exe o pwsh)."
+            )
+
+        script = (
+            "$utf8 = [System.Text.UTF8Encoding]::new(); "
+            "[Console]::OutputEncoding = $utf8; "
+            "$OutputEncoding = $utf8; "
+            "$ErrorActionPreference = 'Stop'; "
+            f"try {{ {cmd} }} catch {{ "
+            "[Console]::Error.WriteLine($_.ToString()); exit 1 }; "
+            "if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }"
+        )
+        return [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ]
+
+    executable = shutil.which("bash")
+    if executable is None and Path("/bin/bash").is_file():
+        executable = "/bin/bash"
+    if executable is None:
+        raise FileNotFoundError("No se encontro Bash.")
+    return [executable, "-c", cmd]
 
 
 # ============================================================
 # LOG DE AUDITORÍA
 # ============================================================
 
-def _log(action: str, risk: Risk, allowed: bool, detail: str = ""):
+def _log(
+    action: str,
+    risk: Risk,
+    allowed: bool,
+    detail: str = "",
+) -> None:
     """Escribe una línea en el log de auditoría."""
     AUDIT_FILE.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().isoformat(timespec="seconds")
@@ -121,7 +229,12 @@ def read_log(lines: int = 50) -> list[str]:
 # CONFIRMACIÓN INTERACTIVA
 # ============================================================
 
-def confirm(risk: Risk, action: str, detail: str = "", bypass: bool = False) -> bool:
+def confirm(
+    risk: Risk,
+    action: str,
+    detail: str = "",
+    bypass: bool = False,
+) -> bool:
     """
     Pide confirmación al usuario para una acción.
 
@@ -186,31 +299,52 @@ def confirm(risk: Risk, action: str, detail: str = "", bypass: bool = False) -> 
 # EJECUCIÓN DE COMANDOS CON GATEKEEPER
 # ============================================================
 
-def run_command(cmd: str, bypass: bool = False, capture: bool = True) -> tuple[int, str, str]:
+def run_command(
+    cmd: str,
+    bypass: bool = False,
+    capture: bool = True,
+    minimum_risk: Risk | None = None,
+) -> tuple[int, str, str]:
     """
-    Ejecuta un comando de shell pasándolo por el Gatekeeper.
-
-    Usa bash como intérprete para soportar ~, $VAR, pipes, globs y
-    redirecciones. El Gatekeeper es la capa de seguridad.
+    Ejecuta un comando bajo PowerShell (Windows) o Bash (Linux/macOS).
 
     Devuelve (returncode, stdout, stderr).
     """
-    risk = analyze_command(cmd)
+    if not cmd.strip():
+        return (2, "", "Falta el comando a ejecutar.")
 
-    if not confirm(risk, action=f"Ejecutar: {cmd}", bypass=bypass):
+    shell = detect_shell()
+    risk = analyze_command(cmd, shell=shell)
+    if minimum_risk is not None:
+        if not isinstance(minimum_risk, Risk):
+            return (2, "", "El nivel mínimo de riesgo no es válido.")
+        risk_order = {
+            Risk.SAFE: 0,
+            Risk.WARN: 1,
+            Risk.CRITICAL: 2,
+        }
+        if risk_order[minimum_risk] > risk_order[risk]:
+            risk = minimum_risk
+
+    if not confirm(
+        risk,
+        action=f"Ejecutar en {shell.value}: {cmd}",
+        bypass=bypass,
+    ):
         return (-1, "", "Cancelado por el usuario")
 
     try:
+        command = _shell_command(cmd, shell)
         result = subprocess.run(
-            cmd,
-            shell=True,
-            executable="/bin/bash",
+            command,
             capture_output=capture,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
-        return (result.returncode, result.stdout, result.stderr)
+        return (result.returncode, result.stdout or "", result.stderr or "")
     except FileNotFoundError as e:
         return (127, "", f"Comando no encontrado: {e}")
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return (1, "", f"Error ejecutando: {e}")

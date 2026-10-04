@@ -1,0 +1,26 @@
+{
+  "id": "/ghostwriter/",
+  "name": "Ghost Writer Local",
+  "short_name": "Ghost Writer",
+  "description": "Estudio de escritura con IA local o Ollama Cloud bajo elección.",
+  "start_url": "/ghostwriter/",
+  "scope": "/ghostwriter/",
+  "display": "standalone",
+  "prefer_related_applications": false,
+  "background_color": "#020617",
+  "theme_color": "#312e81",
+  "icons": [
+    {
+      "src": "/ghostwriter/icons/icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/ghostwriter/icons/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

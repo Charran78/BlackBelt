@@ -24,6 +24,12 @@ def detect_distro() -> str:
 
 
 def detect_shell() -> str:
+    if platform.system() == "Windows":
+        if os.environ.get("PSModulePath"):
+            return "PowerShell"
+        if os.environ.get("PROMPT") is not None:
+            return "Command Prompt"
+        return "Windows shell (desconocido)"
     return os.environ.get("SHELL", "desconocido")
 
 

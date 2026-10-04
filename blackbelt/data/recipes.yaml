@@ -1,0 +1,1106 @@
+- id: find_large_files
+  titulo: Encontrar archivos grandes
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [grandes, espacio, ocupan, tamaño, pesados, disco, archivos]
+  preguntas:
+    - id: dir
+      texto: ¿En qué carpeta buscar?
+      tipo: path
+      default: .
+    - id: tam
+      texto: ¿A partir de qué tamaño?
+      tipo: opcion
+      opciones: ["+100M", "+500M", "+1G", "+5G"]
+      default: "+100M"
+      valores:
+        windows:
+          "+100M": "104857600"
+          "+500M": "524288000"
+          "+1G": "1073741824"
+          "+5G": "5368709120"
+  comandos:
+    linux:
+      cmd: >-
+        find {dir} -type f -size {tam} -exec ls -lh {} +
+        2>/dev/null | sort -k5 -h
+      descripcion: Lista archivos mayores de {tam} en {dir}, ordenados por tamaño.
+      riesgo: SAFE
+    macos:
+      cmd: >-
+        find {dir} -type f -size {tam} -exec ls -lh {} +
+        2>/dev/null | sort -k5 -h
+      descripcion: Lista archivos mayores de {tam} en {dir}, ordenados por tamaño.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -LiteralPath {dir} -Recurse -File
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -gt {tam} } |
+        Sort-Object Length -Descending |
+        Select-Object -First 30 FullName, Length
+      descripcion: Lista los 30 archivos mayores de {tam} en {dir}.
+      riesgo: SAFE
+
+- id: find_by_name
+  titulo: Buscar archivos por nombre
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [buscar, encontrar, archivo, archivos, nombre, fichero, pdf]
+  preguntas:
+    - id: dir
+      texto: ¿En qué carpeta buscar?
+      tipo: path
+      default: .
+    - id: patron
+      texto: ¿Qué nombre o patrón buscar? (por ejemplo, *.pdf)
+      tipo: texto
+      default: "*.pdf"
+  comandos:
+    linux:
+      cmd: find {dir} -type f -name {patron} 2>/dev/null
+      descripcion: Busca archivos que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+    macos:
+      cmd: find {dir} -type f -name {patron} 2>/dev/null
+      descripcion: Busca archivos que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -LiteralPath {dir} -Recurse -File -Filter {patron}
+        -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName
+      descripcion: Busca archivos que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+
+- id: disk_usage
+  titulo: Ver uso de disco
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [disco, espacio, libre, ocupado, df, capacidad, unidades]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: df -h
+      descripcion: Muestra el espacio usado y libre en los discos.
+      riesgo: SAFE
+    macos:
+      cmd: df -h
+      descripcion: Muestra el espacio usado y libre en los discos.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-PSDrive -PSProvider FileSystem |
+        Select-Object Name,
+        @{N='UsadoGB';E={[math]::Round($_.Used/1GB,2)}},
+        @{N='LibreGB';E={[math]::Round($_.Free/1GB,2)}}
+      descripcion: Muestra el espacio usado y libre en las unidades.
+      riesgo: SAFE
+
+- id: list_processes
+  titulo: Ver procesos en ejecución
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [procesos, cpu, memoria, consumo, top, corriendo]
+  preguntas:
+    - id: orden
+      texto: ¿Ordenar por CPU o memoria?
+      tipo: opcion
+      opciones: [cpu, memoria]
+      default: cpu
+      valores:
+        linux:
+          cpu: "%cpu"
+          memoria: "%mem"
+        macos:
+          cpu: "4"
+          memoria: "5"
+        windows:
+          cpu: CPU
+          memoria: WorkingSet
+  comandos:
+    linux:
+      cmd: ps aux --sort=-{orden} | head -20
+      descripcion: Muestra los 20 procesos con mayor consumo de {orden}.
+      riesgo: SAFE
+    macos:
+      cmd: ps -Ao pid,ppid,user,%cpu,%mem,command | sort -rn -k{orden} | head -20
+      descripcion: Muestra los 20 procesos con mayor consumo de {orden}.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-Process | Sort-Object {orden} -Descending |
+        Select-Object -First 20 Name, CPU,
+        @{N='MemoriaMB';E={[math]::Round($_.WorkingSet/1MB,2)}}
+      descripcion: Muestra los 20 procesos con mayor consumo de {orden}.
+      riesgo: SAFE
+
+- id: grep_recursive
+  titulo: Buscar texto dentro de archivos
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [grep, buscar, texto, contenido, dentro, archivos, notas]
+  preguntas:
+    - id: patron
+      texto: ¿Qué texto buscar?
+      tipo: texto
+      default: ""
+    - id: dir
+      texto: ¿En qué carpeta buscar?
+      tipo: path
+      default: .
+  comandos:
+    linux:
+      cmd: >-
+        grep -rn --include='*.txt' --include='*.md' --include='*.py'
+        -- {patron} {dir} 2>/dev/null | head -50
+      descripcion: Busca el texto indicado en archivos txt, md y py dentro de {dir}.
+      riesgo: SAFE
+    macos:
+      cmd: >-
+        grep -rn --include='*.txt' --include='*.md' --include='*.py'
+        -- {patron} {dir} 2>/dev/null | head -50
+      descripcion: Busca el texto indicado en archivos txt, md y py dentro de {dir}.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -Path {dir} -Recurse -File
+        -Include *.txt,*.md,*.py -ErrorAction SilentlyContinue |
+        Select-String -SimpleMatch -Pattern {patron} |
+        Select-Object -First 50
+      descripcion: Busca el texto indicado en archivos txt, md y py dentro de {dir}.
+      riesgo: SAFE
+
+- id: clean_temp
+  titulo: Revisar o limpiar archivos temporales antiguos
+  categoria: mantenimiento
+  os: [linux, macos, windows]
+  keywords: [limpiar, temporales, basura, borrar, tmp, cache]
+  preguntas:
+    - id: modo
+      texto: ¿Quieres previsualizar o borrar los archivos de más de 7 días?
+      tipo: opcion
+      opciones: [preview, borrar]
+      default: preview
+  comandos:
+    linux:
+      cmd_preview: find /tmp -type f -atime +7 2>/dev/null | head -50
+      cmd_borrar: >-
+        find /tmp -type f -atime +7 -exec rm -- {} +
+      descripcion: Revisa o elimina archivos de /tmp sin acceso en más de 7 días.
+      riesgo_preview: SAFE
+      riesgo_borrar: CRITICAL
+    macos:
+      cmd_preview: find /tmp -type f -atime +7 2>/dev/null | head -50
+      cmd_borrar: >-
+        find /tmp -type f -atime +7 -exec rm -- {} +
+      descripcion: Revisa o elimina archivos de /tmp sin acceso en más de 7 días.
+      riesgo_preview: SAFE
+      riesgo_borrar: CRITICAL
+    windows:
+      cmd_preview: >-
+        Get-ChildItem $env:TEMP -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastAccessTime -lt (Get-Date).AddDays(-7) } |
+        Select-Object -First 50 FullName
+      cmd_borrar: >-
+        Get-ChildItem $env:TEMP -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastAccessTime -lt (Get-Date).AddDays(-7) } |
+        Remove-Item
+      descripcion: Revisa o elimina archivos temporales sin acceso en más de 7 días.
+      riesgo_preview: SAFE
+      riesgo_borrar: CRITICAL
+
+- id: git_undo_last_commit
+  titulo: Deshacer el último commit conservando los cambios
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, deshacer, commit, revertir, undo]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: git reset --soft HEAD~1
+      descripcion: Deshace el último commit y conserva sus cambios en staging.
+      riesgo: CRITICAL
+    macos:
+      cmd: git reset --soft HEAD~1
+      descripcion: Deshace el último commit y conserva sus cambios en staging.
+      riesgo: CRITICAL
+    windows:
+      cmd: git reset --soft HEAD~1
+      descripcion: Deshace el último commit y conserva sus cambios en staging.
+      riesgo: CRITICAL
+
+- id: network_ports
+  titulo: Ver puertos en escucha
+  categoria: red
+  os: [linux, macos, windows]
+  keywords: [puertos, red, conexiones, escuchando, listening, netstat]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: ss -tulnp
+      descripcion: Muestra puertos TCP y UDP en escucha.
+      riesgo: SAFE
+    macos:
+      cmd: lsof -nP -iTCP -sTCP:LISTEN
+      descripcion: Muestra puertos TCP en escucha y sus procesos.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-NetTCPConnection -State Listen |
+        Select-Object LocalAddress, LocalPort,
+        @{N='Proceso';E={(Get-Process -Id $_.OwningProcess).ProcessName}} |
+        Sort-Object LocalPort
+      descripcion: Muestra puertos TCP en escucha y sus procesos.
+      riesgo: SAFE
+
+- id: list_directory
+  titulo: Listar archivos de una carpeta
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [listar, carpeta, directorio, contenido, ver, ocultos]
+  preguntas:
+    - id: dir
+      texto: ¿Qué carpeta quieres listar?
+      tipo: path
+      default: .
+  comandos:
+    linux:
+      cmd: ls -la -- {dir}
+      descripcion: Lista archivos visibles y ocultos en {dir}.
+      riesgo: SAFE
+    macos:
+      cmd: ls -la {dir}
+      descripcion: Lista archivos visibles y ocultos en {dir}.
+      riesgo: SAFE
+    windows:
+      cmd: Get-ChildItem -Force -LiteralPath {dir}
+      descripcion: Lista archivos visibles y ocultos en {dir}.
+      riesgo: SAFE
+
+- id: find_directories
+  titulo: Buscar carpetas por nombre
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [buscar, encontrar, carpeta, directorio, nombre]
+  preguntas:
+    - id: dir
+      texto: ¿Desde dónde buscar?
+      tipo: path
+      default: .
+    - id: patron
+      texto: ¿Qué nombre o patrón buscar?
+      tipo: texto
+      default: "*"
+  comandos:
+    linux:
+      cmd: find {dir} -type d -iname {patron} -print 2>/dev/null | head -50
+      descripcion: Busca hasta 50 carpetas que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+    macos:
+      cmd: find {dir} -type d -iname {patron} -print 2>/dev/null | head -50
+      descripcion: Busca hasta 50 carpetas que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -LiteralPath {dir} -Recurse -Directory -Filter {patron}
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 50 -ExpandProperty FullName
+      descripcion: Busca hasta 50 carpetas que coincidan con {patron} en {dir}.
+      riesgo: SAFE
+
+- id: find_empty_files
+  titulo: Encontrar archivos vacíos
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [vacíos, vacio, vacía, cero, tamaño, archivos]
+  preguntas:
+    - id: dir
+      texto: ¿En qué carpeta buscar?
+      tipo: path
+      default: .
+  comandos:
+    linux:
+      cmd: find {dir} -type f -empty -print 2>/dev/null
+      descripcion: Encuentra archivos de cero bytes dentro de {dir}.
+      riesgo: SAFE
+    macos:
+      cmd: find {dir} -type f -empty -print 2>/dev/null
+      descripcion: Encuentra archivos de cero bytes dentro de {dir}.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -LiteralPath {dir} -Recurse -File
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.Length -eq 0 } |
+        Select-Object -ExpandProperty FullName
+      descripcion: Encuentra archivos de cero bytes dentro de {dir}.
+      riesgo: SAFE
+
+- id: recent_files
+  titulo: Encontrar archivos modificados recientemente
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [recientes, modificados, últimos, dias, días, archivos, cambios]
+  preguntas:
+    - id: dir
+      texto: ¿En qué carpeta buscar?
+      tipo: path
+      default: .
+    - id: dias
+      texto: ¿Cuántos días hacia atrás?
+      tipo: opcion
+      opciones: ["1", "7", "30"]
+      default: "7"
+  comandos:
+    linux:
+      cmd: find {dir} -type f -mtime -{dias} -print 2>/dev/null | head -100
+      descripcion: Muestra hasta 100 archivos modificados en los últimos {dias} días.
+      riesgo: SAFE
+    macos:
+      cmd: find {dir} -type f -mtime -{dias} -print 2>/dev/null | head -100
+      descripcion: Muestra hasta 100 archivos modificados en los últimos {dias} días.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-ChildItem -LiteralPath {dir} -Recurse -File
+        -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-{dias}) } |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 100 FullName, LastWriteTime
+      descripcion: Muestra hasta 100 archivos modificados en los últimos {dias} días.
+      riesgo: SAFE
+
+- id: count_files
+  titulo: Contar archivos de una carpeta
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [contar, cantidad, cuantos, cuántos, archivos, ficheros]
+  preguntas:
+    - id: dir
+      texto: ¿En qué carpeta contar?
+      tipo: path
+      default: .
+  comandos:
+    linux:
+      cmd: find {dir} -type f 2>/dev/null | wc -l
+      descripcion: Cuenta los archivos de {dir} y sus subcarpetas.
+      riesgo: SAFE
+    macos:
+      cmd: find {dir} -type f 2>/dev/null | wc -l
+      descripcion: Cuenta los archivos de {dir} y sus subcarpetas.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        @(Get-ChildItem -LiteralPath {dir} -Recurse -File
+        -ErrorAction SilentlyContinue).Count
+      descripcion: Cuenta los archivos de {dir} y sus subcarpetas.
+      riesgo: SAFE
+
+- id: read_file_head
+  titulo: Leer el inicio de un archivo
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [leer, ver, mostrar, primeras, líneas, contenido, archivo]
+  preguntas:
+    - id: archivo
+      texto: ¿Qué archivo quieres leer?
+      tipo: path
+      default: ""
+    - id: lineas
+      texto: ¿Cuántas líneas mostrar?
+      tipo: opcion
+      opciones: ["10", "20", "50"]
+      default: "20"
+  comandos:
+    linux:
+      cmd: head -n {lineas} -- {archivo}
+      descripcion: Muestra las primeras {lineas} líneas de {archivo}; el contenido puede ser sensible.
+      riesgo: WARN
+    macos:
+      cmd: head -n {lineas} {archivo}
+      descripcion: Muestra las primeras {lineas} líneas de {archivo}; el contenido puede ser sensible.
+      riesgo: WARN
+    windows:
+      cmd: Get-Content -LiteralPath {archivo} -TotalCount {lineas}
+      descripcion: Muestra las primeras {lineas} líneas de {archivo}; el contenido puede ser sensible.
+      riesgo: WARN
+
+- id: git_status
+  titulo: Ver estado de Git
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, estado, status, cambios, rama, repositorio]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: git status --short --branch
+      descripcion: Muestra la rama actual y los cambios del repositorio.
+      riesgo: SAFE
+    macos:
+      cmd: git status --short --branch
+      descripcion: Muestra la rama actual y los cambios del repositorio.
+      riesgo: SAFE
+    windows:
+      cmd: git status --short --branch
+      descripcion: Muestra la rama actual y los cambios del repositorio.
+      riesgo: SAFE
+
+- id: git_branch
+  titulo: Ver la rama actual de Git
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, rama, branch, actual]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: git branch --show-current
+      descripcion: Muestra el nombre de la rama Git actual.
+      riesgo: SAFE
+    macos:
+      cmd: git branch --show-current
+      descripcion: Muestra el nombre de la rama Git actual.
+      riesgo: SAFE
+    windows:
+      cmd: git branch --show-current
+      descripcion: Muestra el nombre de la rama Git actual.
+      riesgo: SAFE
+
+- id: git_log
+  titulo: Ver commits recientes
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, commits, historial, log, recientes]
+  preguntas:
+    - id: cantidad
+      texto: ¿Cuántos commits mostrar?
+      tipo: opcion
+      opciones: ["5", "10", "20"]
+      default: "10"
+  comandos:
+    linux:
+      cmd: git log -{cantidad} --oneline --decorate
+      descripcion: Muestra los últimos {cantidad} commits.
+      riesgo: SAFE
+    macos:
+      cmd: git log -{cantidad} --oneline --decorate
+      descripcion: Muestra los últimos {cantidad} commits.
+      riesgo: SAFE
+    windows:
+      cmd: git log -{cantidad} --oneline --decorate
+      descripcion: Muestra los últimos {cantidad} commits.
+      riesgo: SAFE
+
+- id: git_changed_files
+  titulo: Ver archivos cambiados en Git
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, cambiados, modificados, archivos, staged, preparados]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: git status --short
+      descripcion: Lista los archivos modificados, nuevos o preparados para commit.
+      riesgo: SAFE
+    macos:
+      cmd: git status --short
+      descripcion: Lista los archivos modificados, nuevos o preparados para commit.
+      riesgo: SAFE
+    windows:
+      cmd: git status --short
+      descripcion: Lista los archivos modificados, nuevos o preparados para commit.
+      riesgo: SAFE
+
+- id: git_diff_summary
+  titulo: Mostrar cambios de Git
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, diff, resumen, cambios, lineas, diferencias]
+  preguntas:
+    - id: area
+      texto: ¿Ver cambios preparados o aún no preparados?
+      tipo: opcion
+      opciones: [preparados, pendientes]
+      default: pendientes
+      valores:
+        linux:
+          preparados: --cached
+          pendientes: --
+        macos:
+          preparados: --cached
+          pendientes: --
+        windows:
+          preparados: --cached
+          pendientes: --
+  comandos:
+    linux:
+      cmd: git diff {area}
+      descripcion: Muestra el diff de los cambios {area}; puede incluir contenido sensible.
+      riesgo: WARN
+    macos:
+      cmd: git diff {area}
+      descripcion: Muestra el diff de los cambios {area}; puede incluir contenido sensible.
+      riesgo: WARN
+    windows:
+      cmd: git diff {area}
+      descripcion: Muestra el diff de los cambios {area}; puede incluir contenido sensible.
+      riesgo: WARN
+
+- id: network_check
+  titulo: Comprobar conexión a un host
+  categoria: red
+  os: [linux, macos, windows]
+  keywords: [internet, conexión, conectividad, ping, host, servidor]
+  preguntas:
+    - id: host
+      texto: ¿Qué host comprobar?
+      tipo: texto
+      default: "1.1.1.1"
+  comandos:
+    linux:
+      cmd: ping -c 4 {host}
+      descripcion: Envía cuatro solicitudes de red a {host}.
+      riesgo: SAFE
+    macos:
+      cmd: ping -c 4 {host}
+      descripcion: Envía cuatro solicitudes de red a {host}.
+      riesgo: SAFE
+    windows:
+      cmd: Test-Connection -ComputerName {host} -Count 4
+      descripcion: Envía cuatro solicitudes de red a {host}.
+      riesgo: SAFE
+
+- id: dns_lookup
+  titulo: Consultar direcciones DNS de un dominio
+  categoria: red
+  os: [linux, macos, windows]
+  keywords: [dns, dominio, ip, resolver, dirección, direcciones]
+  preguntas:
+    - id: dominio
+      texto: ¿Qué dominio consultar?
+      tipo: texto
+      default: "example.com"
+  comandos:
+    linux:
+      cmd: getent ahosts {dominio}
+      descripcion: Consulta las direcciones asociadas a {dominio}.
+      riesgo: SAFE
+    macos:
+      cmd: dscacheutil -q host -a name {dominio}
+      descripcion: Consulta las direcciones asociadas a {dominio}.
+      riesgo: SAFE
+    windows:
+      cmd: "[System.Net.Dns]::GetHostAddresses({dominio})"
+      descripcion: Consulta las direcciones asociadas a {dominio}.
+      riesgo: SAFE
+
+- id: ip_config
+  titulo: Ver configuración de red
+  categoria: red
+  os: [linux, macos, windows]
+  keywords: [ip, red, interfaz, configuración, configuracion, dirección]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: ip address
+      descripcion: Muestra direcciones IP e interfaces de red.
+      riesgo: SAFE
+    macos:
+      cmd: ifconfig
+      descripcion: Muestra direcciones IP e interfaces de red.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-NetIPConfiguration |
+        Select-Object InterfaceAlias, IPv4Address, IPv6Address
+      descripcion: Muestra direcciones IP e interfaces de red.
+      riesgo: SAFE
+
+- id: system_info
+  titulo: Ver información del sistema operativo
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [sistema, operativo, versión, version, kernel, información, info]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: uname -a
+      descripcion: Muestra el kernel y la versión del sistema.
+      riesgo: SAFE
+    macos:
+      cmd: sw_vers
+      descripcion: Muestra la versión de macOS.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        Get-CimInstance Win32_OperatingSystem |
+        Select-Object Caption, Version, OSArchitecture
+      descripcion: Muestra el nombre, versión y arquitectura de Windows.
+      riesgo: SAFE
+
+- id: uptime
+  titulo: Ver tiempo desde el último inicio
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [uptime, inicio, reinicio, arrancado, tiempo, encendido]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: uptime -p
+      descripcion: Muestra cuánto tiempo lleva encendido el sistema.
+      riesgo: SAFE
+    macos:
+      cmd: uptime
+      descripcion: Muestra cuánto tiempo lleva encendido el sistema.
+      riesgo: SAFE
+    windows:
+      cmd: >-
+        (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+      descripcion: Muestra cuánto tiempo lleva encendido el sistema.
+      riesgo: SAFE
+
+- id: process_by_name
+  titulo: Buscar un proceso por nombre
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [proceso, buscar, programa, aplicación, aplicacion, ejecutándose]
+  preguntas:
+    - id: nombre
+      texto: ¿Qué proceso buscar?
+      tipo: texto
+      default: "python"
+  comandos:
+    linux:
+      cmd: pgrep -af -- {nombre}
+      descripcion: Busca procesos cuyo comando coincida con {nombre}.
+      riesgo: SAFE
+    macos:
+      cmd: pgrep -fl {nombre}
+      descripcion: Busca procesos cuyo nombre coincida con {nombre}.
+      riesgo: SAFE
+    windows:
+      cmd: Get-Process -Name {nombre} -ErrorAction SilentlyContinue
+      descripcion: Busca procesos cuyo nombre coincida con {nombre}.
+      riesgo: SAFE
+
+- id: which_command
+  titulo: Encontrar dónde está instalado un comando
+  categoria: sistema
+  os: [linux, macos, windows]
+  keywords: [dónde, donde, instalado, ruta, ejecutable, comando, ubicación]
+  preguntas:
+    - id: programa
+      texto: ¿Qué comando buscar?
+      tipo: texto
+      default: "python"
+  comandos:
+    linux:
+      cmd: command -v {programa}
+      descripcion: Muestra la ruta del ejecutable {programa}, si está instalado.
+      riesgo: SAFE
+    macos:
+      cmd: command -v {programa}
+      descripcion: Muestra la ruta del ejecutable {programa}, si está instalado.
+      riesgo: SAFE
+    windows:
+      cmd: Get-Command -Name {programa} -ErrorAction Stop
+      descripcion: Muestra la ubicación del comando {programa}.
+      riesgo: SAFE
+
+- id: file_size
+  titulo: Ver el tamaño de un archivo
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [tamaño, tamaño, pesa, espacio, archivo, bytes]
+  preguntas:
+    - id: archivo
+      texto: ¿Qué archivo consultar?
+      tipo: path
+      default: ""
+  comandos:
+    linux:
+      cmd: "stat -c '%n: %s bytes' -- {archivo}"
+      descripcion: Muestra el tamaño exacto de {archivo}.
+      riesgo: SAFE
+    macos:
+      cmd: "stat -f '%N: %z bytes' {archivo}"
+      descripcion: Muestra el tamaño exacto de {archivo}.
+      riesgo: SAFE
+    windows:
+      cmd: Get-Item -LiteralPath {archivo} | Select-Object FullName, Length
+      descripcion: Muestra el tamaño exacto de {archivo}.
+      riesgo: SAFE
+
+- id: copy_file
+  titulo: Copiar un archivo sin sobrescribir el destino
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [copiar, copia, duplicar, archivo, mover, respaldo]
+  preguntas:
+    - id: origen
+      texto: ¿Qué archivo copiar?
+      tipo: path
+      default: ""
+    - id: destino
+      texto: ¿Dónde guardar la copia?
+      tipo: path
+      default: ""
+  comandos:
+    linux:
+      cmd: cp -n -- {origen} {destino}
+      descripcion: Copia el archivo sin sobrescribir un destino existente.
+      riesgo: WARN
+    macos:
+      cmd: cp -n {origen} {destino}
+      descripcion: Copia el archivo sin sobrescribir un destino existente.
+      riesgo: WARN
+    windows:
+      cmd: "[System.IO.File]::Copy({origen}, {destino}, $false)"
+      descripcion: Copia el archivo sin sobrescribir un destino existente.
+      riesgo: WARN
+
+- id: create_directory
+  titulo: Crear una carpeta
+  categoria: archivos
+  os: [linux, macos, windows]
+  keywords: [crear, nueva, carpeta, directorio]
+  preguntas:
+    - id: dir
+      texto: ¿Qué ruta tendrá la nueva carpeta?
+      tipo: path
+      default: "nueva-carpeta"
+  comandos:
+    linux:
+      cmd: mkdir -p -- {dir}
+      descripcion: Crea la carpeta y las carpetas padre necesarias.
+      riesgo: WARN
+    macos:
+      cmd: mkdir -p {dir}
+      descripcion: Crea la carpeta y las carpetas padre necesarias.
+      riesgo: WARN
+    windows:
+      cmd: New-Item -ItemType Directory -Path {dir} -Force
+      descripcion: Crea la carpeta y las carpetas padre necesarias.
+      riesgo: WARN
+
+- id: git_staged_files
+  titulo: Ver archivos preparados para commit
+  categoria: git
+  os: [linux, macos, windows]
+  keywords: [git, preparados, staging, staged, commit, agregar, añadidos]
+  preguntas: []
+  comandos:
+    linux:
+      cmd: git diff --cached --name-only
+      descripcion: Lista los archivos preparados para el próximo commit.
+      riesgo: SAFE
+    macos:
+      cmd: git diff --cached --name-only
+      descripcion: Lista los archivos preparados para el próximo commit.
+      riesgo: SAFE
+    windows:
+      cmd: git diff --cached --name-only
+      descripcion: Lista los archivos preparados para el próximo commit.
+      riesgo: SAFE
+
+- id: activate_virtualenv
+  titulo: Activar el entorno virtual de Python
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [activar, entorno, virtual, venv, virtualenv, python, dependencias]
+  ejecucion: manual
+  preguntas:
+    - id: entorno
+      texto: ¿En qué carpeta está el entorno virtual?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [.venv, venv, env]
+        kind: directory
+  comandos:
+    linux:
+      cmd: "source {entorno}/bin/activate"
+      descripcion: Activa el entorno virtual en la terminal actual.
+      riesgo: SAFE
+    macos:
+      cmd: "source {entorno}/bin/activate"
+      descripcion: Activa el entorno virtual en la terminal actual.
+      riesgo: SAFE
+    windows:
+      cmd: ". (Join-Path {entorno} 'Scripts/Activate.ps1')"
+      descripcion: Activa el entorno virtual en la sesión actual de PowerShell.
+      riesgo: SAFE
+
+- id: run_uvicorn
+  titulo: Arrancar una API FastAPI o ASGI con Uvicorn
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [uvicorn, api, fastapi, servidor, arrancar, iniciar, desarrollo]
+  ejecucion: foreground
+  preguntas:
+    - id: aplicacion
+      texto: ¿Cuál es el módulo y objeto ASGI? (por ejemplo, main:app)
+      tipo: texto
+      default: ""
+      autodetect:
+        filenames: [main.py, app.py, asgi.py, server.py]
+        suggestion_template: "{module}:app"
+    - id: puerto
+      texto: ¿En qué puerto iniciar Uvicorn?
+      tipo: opcion
+      opciones: ["8000", "8080", "5000"]
+      default: "8000"
+  comandos:
+    linux:
+      cmd: python -m uvicorn {aplicacion} --reload --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Uvicorn en localhost; requiere que uvicorn esté instalado.
+      riesgo: WARN
+    macos:
+      cmd: python -m uvicorn {aplicacion} --reload --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Uvicorn en localhost; requiere que uvicorn esté instalado.
+      riesgo: WARN
+    windows:
+      cmd: python -m uvicorn {aplicacion} --reload --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Uvicorn en localhost; requiere que uvicorn esté instalado.
+      riesgo: WARN
+
+- id: run_streamlit
+  titulo: Arrancar una app de Streamlit
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [streamlit, app, aplicación, dashboard, servidor, arrancar, iniciar]
+  ejecucion: foreground
+  preguntas:
+    - id: archivo
+      texto: ¿Qué archivo Python ejecutar?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [streamlit_app.py, app.py, main.py]
+    - id: puerto
+      texto: ¿En qué puerto iniciar Streamlit?
+      tipo: opcion
+      opciones: ["8501", "8502", "8000"]
+      default: "8501"
+  comandos:
+    linux:
+      cmd: python -m streamlit run {archivo} --server.address 127.0.0.1 --server.port {puerto}
+      descripcion: Inicia Streamlit en localhost; requiere que esté instalado.
+      riesgo: WARN
+    macos:
+      cmd: python -m streamlit run {archivo} --server.address 127.0.0.1 --server.port {puerto}
+      descripcion: Inicia Streamlit en localhost; requiere que esté instalado.
+      riesgo: WARN
+    windows:
+      cmd: python -m streamlit run {archivo} --server.address 127.0.0.1 --server.port {puerto}
+      descripcion: Inicia Streamlit en localhost; requiere que esté instalado.
+      riesgo: WARN
+
+- id: run_gradio
+  titulo: Arrancar una app de Gradio
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [gradio, demo, interfaz, ia, servidor, arrancar, iniciar]
+  ejecucion: foreground
+  preguntas:
+    - id: archivo
+      texto: ¿Qué archivo Python ejecutar?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [app.py, demo.py, main.py]
+  comandos:
+    linux:
+      cmd: "GRADIO_SERVER_NAME=127.0.0.1 python {archivo}"
+      descripcion: Inicia Gradio en localhost; requiere que la app use la configuración del entorno.
+      riesgo: WARN
+    macos:
+      cmd: "GRADIO_SERVER_NAME=127.0.0.1 python {archivo}"
+      descripcion: Inicia Gradio en localhost; requiere que la app use la configuración del entorno.
+      riesgo: WARN
+    windows:
+      cmd: "$env:GRADIO_SERVER_NAME='127.0.0.1'; python {archivo}"
+      descripcion: Inicia Gradio en localhost; requiere que la app use la configuración del entorno.
+      riesgo: WARN
+
+- id: docker_compose_up
+  titulo: Arrancar servicios con Docker Compose
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [docker, compose, contenedores, levantar, arrancar, iniciar, servicios]
+  ejecucion: foreground
+  preguntas: []
+  comandos:
+    linux:
+      cmd: docker compose up --build
+      descripcion: Construye y arranca los servicios en primer plano; revisa sus puertos publicados.
+      riesgo: WARN
+    macos:
+      cmd: docker compose up --build
+      descripcion: Construye y arranca los servicios en primer plano; revisa sus puertos publicados.
+      riesgo: WARN
+    windows:
+      cmd: docker compose up --build
+      descripcion: Construye y arranca los servicios en primer plano; revisa sus puertos publicados.
+      riesgo: WARN
+
+- id: docker_compose_down
+  titulo: Detener servicios de Docker Compose
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [docker, compose, detener, parar, apagar, servicios, contenedores]
+  ejecucion: foreground
+  preguntas: []
+  comandos:
+    linux:
+      cmd: docker compose down
+      descripcion: Detiene y elimina contenedores y red del proyecto; conserva los volúmenes.
+      riesgo: WARN
+    macos:
+      cmd: docker compose down
+      descripcion: Detiene y elimina contenedores y red del proyecto; conserva los volúmenes.
+      riesgo: WARN
+    windows:
+      cmd: docker compose down
+      descripcion: Detiene y elimina contenedores y red del proyecto; conserva los volúmenes.
+      riesgo: WARN
+
+- id: run_django
+  titulo: Arrancar el servidor de desarrollo de Django
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [django, python, servidor, desarrollo, arrancar, iniciar, runserver]
+  ejecucion: foreground
+  preguntas:
+    - id: manage
+      texto: ¿Dónde está manage.py?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [manage.py]
+    - id: puerto
+      texto: ¿En qué puerto iniciar Django?
+      tipo: opcion
+      opciones: ["8000", "8080", "5000"]
+      default: "8000"
+  comandos:
+    linux:
+      cmd: python {manage} runserver 127.0.0.1:{puerto}
+      descripcion: Inicia Django solo en localhost; usa únicamente para desarrollo.
+      riesgo: WARN
+    macos:
+      cmd: python {manage} runserver 127.0.0.1:{puerto}
+      descripcion: Inicia Django solo en localhost; usa únicamente para desarrollo.
+      riesgo: WARN
+    windows:
+      cmd: python {manage} runserver 127.0.0.1:{puerto}
+      descripcion: Inicia Django solo en localhost; usa únicamente para desarrollo.
+      riesgo: WARN
+
+- id: run_flask
+  titulo: Arrancar el servidor de desarrollo de Flask
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [flask, python, servidor, desarrollo, arrancar, iniciar]
+  ejecucion: foreground
+  preguntas:
+    - id: aplicacion
+      texto: ¿Qué módulo o archivo contiene la app Flask?
+      tipo: texto
+      default: ""
+      autodetect:
+        filenames: [app.py, wsgi.py, main.py]
+        suggestion_template: "{module}"
+    - id: puerto
+      texto: ¿En qué puerto iniciar Flask?
+      tipo: opcion
+      opciones: ["5000", "8000", "8080"]
+      default: "5000"
+  comandos:
+    linux:
+      cmd: python -m flask --app {aplicacion} run --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Flask solo en localhost; requiere que Flask esté instalado.
+      riesgo: WARN
+    macos:
+      cmd: python -m flask --app {aplicacion} run --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Flask solo en localhost; requiere que Flask esté instalado.
+      riesgo: WARN
+    windows:
+      cmd: python -m flask --app {aplicacion} run --host 127.0.0.1 --port {puerto}
+      descripcion: Inicia Flask solo en localhost; requiere que Flask esté instalado.
+      riesgo: WARN
+
+- id: run_rust
+  titulo: Compilar y arrancar un proyecto Rust
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [rust, cargo, compilar, ejecutar, arrancar, proyecto]
+  ejecucion: foreground
+  preguntas:
+    - id: manifest
+      texto: ¿Dónde está el archivo Cargo.toml?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [Cargo.toml]
+  comandos:
+    linux:
+      cmd: cargo run --manifest-path {manifest}
+      descripcion: Compila y ejecuta el proyecto Rust en modo desarrollo.
+      riesgo: WARN
+    macos:
+      cmd: cargo run --manifest-path {manifest}
+      descripcion: Compila y ejecuta el proyecto Rust en modo desarrollo.
+      riesgo: WARN
+    windows:
+      cmd: cargo run --manifest-path {manifest}
+      descripcion: Compila y ejecuta el proyecto Rust en modo desarrollo.
+      riesgo: WARN
+
+- id: test_rust
+  titulo: Ejecutar las pruebas de un proyecto Rust
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [rust, cargo, test, tests, pruebas, verificar]
+  ejecucion: foreground
+  preguntas:
+    - id: manifest
+      texto: ¿Dónde está el archivo Cargo.toml?
+      tipo: path
+      default: ""
+      autodetect:
+        filenames: [Cargo.toml]
+  comandos:
+    linux:
+      cmd: cargo test --manifest-path {manifest}
+      descripcion: Compila y ejecuta las pruebas definidas en el proyecto Rust.
+      riesgo: WARN
+    macos:
+      cmd: cargo test --manifest-path {manifest}
+      descripcion: Compila y ejecuta las pruebas definidas en el proyecto Rust.
+      riesgo: WARN
+    windows:
+      cmd: cargo test --manifest-path {manifest}
+      descripcion: Compila y ejecuta las pruebas definidas en el proyecto Rust.
+      riesgo: WARN
+
+- id: run_vite
+  titulo: Arrancar un proyecto frontend con Vite
+  categoria: desarrollo
+  os: [linux, macos, windows]
+  keywords: [vite, frontend, react, vue, javascript, typescript, servidor, desarrollo]
+  ejecucion: foreground
+  preguntas: []
+  comandos:
+    linux:
+      cmd: npm run dev -- --host 127.0.0.1
+      descripcion: Inicia el servidor de desarrollo de Vite accesible solo desde localhost.
+      riesgo: WARN
+    macos:
+      cmd: npm run dev -- --host 127.0.0.1
+      descripcion: Inicia el servidor de desarrollo de Vite accesible solo desde localhost.
+      riesgo: WARN
+    windows:
+      cmd: npm run dev -- --host 127.0.0.1
+      descripcion: Inicia el servidor de desarrollo de Vite accesible solo desde localhost.
+      riesgo: WARN
