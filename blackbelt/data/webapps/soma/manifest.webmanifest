@@ -1,8 +1,8 @@
 {
   "id": "/soma/",
-  "name": "SOMA Guard",
+  "name": "SomaGuard L5-S1",
   "short_name": "SomaGuard",
-  "description": "Plantilla personal de planificación y seguimiento.",
+  "description": "Asistente personal de autocuidado.",
   "start_url": "/soma/",
   "scope": "/soma/",
   "display": "standalone",

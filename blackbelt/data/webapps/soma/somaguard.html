@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SOMA Guard | Registro personal de bienestar</title>
+    <title>SomaGuard L5-S1 | Asistente Personal de Salud</title>
     <meta name="theme-color" content="#0f172a">
     <link rel="manifest" href="/soma/manifest.webmanifest">
     <link rel="icon" href="/soma/icons/icon.svg" type="image/svg+xml">
@@ -95,7 +95,7 @@
                     </div>
                     <div>
                         <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
-                            SOMA Guard <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hidden sm:inline">Plantilla personalizable</span>
+                            SomaGuard <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hidden sm:inline">L5-S1 Safe</span>
                         </h1>
                     </div>
                 </div>
@@ -113,7 +113,7 @@
                     <div class="flex flex-col items-end">
                         <div class="flex items-center space-x-1.5">
                             <span class="text-xs text-slate-400 font-medium">Nivel <span id="user-level" class="text-emerald-400 font-bold">1</span></span>
-                            <span id="user-rank" class="text-[11px] px-1.5 py-0.2 bg-slate-800 rounded text-slate-300 border border-slate-700">Nivel 1</span>
+                            <span id="user-rank" class="text-[11px] px-1.5 py-0.2 bg-slate-800 rounded text-slate-300 border border-slate-700">Protector L5</span>
                         </div>
                         <div class="w-24 sm:w-32 bg-slate-800 rounded-full h-2 mt-1 overflow-hidden border border-slate-700/50">
                             <div id="xp-bar" class="bg-gradient-to-r from-emerald-500 to-cyan-400 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
@@ -123,7 +123,7 @@
                     <!-- Botón de Pánico 🚨 -->
                     <button id="btn-panic" onclick="openPanicModal()" class="panic-pulse bg-danger-600 hover:bg-danger-700 text-white font-bold px-3 py-2 rounded-xl text-xs sm:text-sm flex items-center space-x-2 shadow-lg transition-all active:scale-95">
                         <i class="fa-solid fa-triangle-exclamation text-base"></i>
-                        <span class="hidden sm:inline">AVISO</span>
+                        <span class="hidden sm:inline">ALERTA DOLOR</span>
                     </button>
 
                     <!-- Settings / Backup -->
@@ -139,11 +139,11 @@
             <div class="max-w-7xl mx-auto px-2 sm:px-6 lg:px-8 flex space-x-1 sm:space-x-4 overflow-x-auto no-scrollbar">
                 <button onclick="switchTab('tab-nutrition')" id="nav-nutrition" class="tab-btn active flex items-center space-x-2 px-4 py-3 text-xs sm:text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap">
                     <i class="fa-solid fa-utensils"></i>
-                    <span>Plan personal</span>
+                    <span>Alimentación</span>
                 </button>
                 <button onclick="switchTab('tab-exercise')" id="nav-exercise" class="tab-btn flex items-center space-x-2 px-4 py-3 text-xs sm:text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap">
                     <i class="fa-solid fa-dumbbell"></i>
-                    <span>Rutina personal</span>
+                    <span>Ejercicio Seguro</span>
                 </button>
                 <button onclick="switchTab('tab-log')" id="nav-log" class="tab-btn flex items-center space-x-2 px-4 py-3 text-xs sm:text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap">
                     <i class="fa-solid fa-clipboard-check"></i>
@@ -151,7 +151,7 @@
                 </button>
                 <button onclick="switchTab('tab-ai')" id="nav-ai" class="tab-btn flex items-center space-x-2 px-4 py-3 text-xs sm:text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap">
                     <i class="fa-solid fa-microchip text-cyan-400"></i>
-                    <span>Resumen</span>
+                    <span>Motor Clínico</span>
                 </button>
             </div>
         </nav>
@@ -167,23 +167,24 @@
                     <i class="fa-regular fa-calendar-days text-xl"></i>
                 </div>
                 <div>
-                    <label for="day-select" class="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Plan del día</label>
+                    <label for="day-select" class="block text-xs font-semibold text-slate-400 uppercase tracking-wider">Menú & Rutina del Día</label>
                     <select id="day-select" onchange="changeActiveDay(this.value)" class="bg-slate-800 border border-slate-700 text-slate-100 font-semibold rounded-lg px-3 py-1.5 mt-0.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none text-sm">
-                        <option value="Lunes">Lunes</option>
-                        <option value="Martes">Martes</option>
-                        <option value="Miércoles">Miércoles</option>
-                        <option value="Jueves">Jueves</option>
-                        <option value="Viernes">Viernes</option>
-                        <option value="Sábado">Sábado</option>
-                        <option value="Domingo">Domingo</option>
+                        <option value="Lunes">Lunes (Bloque A: Fuerza/Malla)</option>
+                        <option value="Martes">Martes (Bloque B: Cardio Sentado)</option>
+                        <option value="Miércoles">Miércoles (Bloque A: Fuerza/Malla)</option>
+                        <option value="Jueves">Jueves (Bloque B: Cardio Sentado)</option>
+                        <option value="Viernes">Viernes (Bloque A: Fuerza/Malla)</option>
+                        <option value="Sábado">Sábado (Bloque B: Cardio Sentado)</option>
+                        <option value="Domingo">Domingo (Bloque C: Descanso Activo Discal)</option>
                     </select>
                 </div>
             </div>
 
+            <!-- Restricciones críticas badge -->
             <div class="flex items-center space-x-2 bg-amber-500/10 border border-amber-500/20 text-amber-300 px-3 py-2 rounded-xl text-xs w-full md:w-auto">
                 <i class="fa-solid fa-triangle-exclamation text-amber-400 text-sm flex-shrink-0"></i>
                 <div>
-                    <span class="font-bold">Importante:</span> Esta plantilla no prescribe actividades, dieta ni tratamientos.
+                    <span class="font-bold">Regla de Oro:</span> Cero flexión abdominal, lumbar neutra y cero impacto en rodilla.
                 </div>
             </div>
         </div>
@@ -197,43 +198,43 @@
                         <i class="fa-solid fa-leaf text-lg"></i>
                     </div>
                     <div>
-                        <h2 class="text-base font-bold text-white">Plan personal</h2>
-                        <p class="text-xs text-slate-400">Organiza aquí tus elementos y notas de seguimiento</p>
+                        <h2 class="text-base font-bold text-white">Estrategia Deficit Calórico & Antiinflamatoria</h2>
+                        <p class="text-xs text-slate-400">Cardioprotectora, baja en grasas saturadas y rica en fibra soluble</p>
                     </div>
                 </div>
                 <p class="text-sm text-slate-300 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 leading-relaxed" id="nutrition-strategy-desc">
                     <!-- Dynamic insertion via JS -->
                 </p>
 
-                <!-- Personal plan categories -->
+                <!-- Pautas e ingredientes rápida consulta -->
                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4 text-xs">
                     <div class="bg-emerald-950/20 border border-emerald-800/40 p-3 rounded-xl">
                         <div class="font-bold text-emerald-400 mb-1 flex items-center gap-1.5">
-                            <i class="fa-solid fa-circle-check"></i> Categoría A
+                            <i class="fa-solid fa-circle-check"></i> Vía Libre
                         </div>
-                        <p class="text-slate-300" id="plan-category-a"></p>
+                        <p class="text-slate-300" id="pautas-via-libre"></p>
                     </div>
                     <div class="bg-amber-950/20 border border-amber-800/40 p-3 rounded-xl">
                         <div class="font-bold text-amber-400 mb-1 flex items-center gap-1.5">
-                            <i class="fa-solid fa-scale-balanced"></i> Categoría B
+                            <i class="fa-solid fa-scale-balanced"></i> Control Calórico
                         </div>
-                        <p class="text-slate-300" id="plan-category-b"></p>
+                        <p class="text-slate-300" id="pautas-control-calorias"></p>
                     </div>
                     <div class="bg-cyan-950/20 border border-cyan-800/40 p-3 rounded-xl">
                         <div class="font-bold text-cyan-400 mb-1 flex items-center gap-1.5">
-                            <i class="fa-solid fa-list"></i> Categoría C
+                            <i class="fa-solid fa-heart-pulse"></i> Colesterol & Sal
                         </div>
-                        <p class="text-slate-300" id="plan-category-c"></p>
+                        <p class="text-slate-300" id="pautas-colesterol"></p>
                     </div>
                 </div>
             </div>
 
-            <!-- Daily plan checklist -->
+            <!-- Menú del Día Checklist -->
             <div class="bg-slate-900 rounded-2xl border border-slate-800 p-5 shadow-sm">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-base font-bold text-white flex items-center gap-2">
                         <i class="fa-solid fa-clipboard-list text-emerald-400"></i>
-                        Elementos del plan para <span id="current-day-label" class="text-emerald-400">Hoy</span>
+                        Plan de Comidas para <span id="current-day-label" class="text-emerald-400">Hoy</span>
                     </h3>
                     <span class="text-xs text-slate-400 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-700" id="meal-progress-text">0 / 4 Completadas</span>
                 </div>
@@ -252,8 +253,8 @@
                     <span id="exercise-block-badge" class="inline-block text-xs font-bold px-2.5 py-1 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 mb-2">
                         BLOQUE A
                     </span>
-                    <h2 id="exercise-block-title" class="text-xl font-bold text-white">Rutina personal</h2>
-                    <p id="exercise-block-freq" class="text-xs text-slate-400 mt-0.5">Añade tus propios elementos</p>
+                    <h2 id="exercise-block-title" class="text-xl font-bold text-white">Fuerza & Malla Abdominal Isométrica</h2>
+                    <p id="exercise-block-freq" class="text-xs text-slate-400 mt-0.5">Preferiblemente por la mañana, antes de comer</p>
                 </div>
 
                 <!-- Temporizador Modal Quick Launch / Interactive Player -->
@@ -275,11 +276,17 @@
                 </div>
             </div>
 
+            <!-- Precauciones estrictas L5-S1 -->
             <div class="bg-red-950/20 border border-red-800/40 p-4 rounded-2xl text-xs text-red-300 space-y-1">
                 <div class="font-bold text-red-400 flex items-center gap-2 text-sm">
-                    <i class="fa-solid fa-shield-cat"></i> Nota de uso
+                    <i class="fa-solid fa-shield-cat"></i> RESTRICCIONES CRÍTICAS INNEGOCIABLES
                 </div>
-                <p class="text-slate-300 pl-1">Esta plantilla no prescribe ni recomienda actividades. Consulta a profesionales cualificados para recibir orientación adecuada a tu situación.</p>
+                <ul class="list-disc list-inside space-y-1 text-slate-300 pl-1">
+                    <li><strong class="text-red-300">PROHIBIDO:</strong> Flexiones abdominales tradicionales (crunches) o giros de columna.</li>
+                    <li><strong class="text-red-300">PROHIBIDO:</strong> Ejercicios de pie que carguen peso sobre la rodilla lesionada.</li>
+                    <li><strong class="text-emerald-400">OBLIGATORIO:</strong> Mantener siempre la columna neutra (recta).</li>
+                    <li><strong class="text-emerald-400">OBLIGATORIO:</strong> Detener la actividad ante cualquier dolor punzante (ciática).</li>
+                </ul>
             </div>
 
             <!-- Lista de ejercicios del bloque -->
@@ -298,14 +305,16 @@
                     </h2>
 
                     <form id="daily-log-form" onsubmit="saveDailyLog(event)" class="space-y-4 text-xs">
+                        <!-- Dolor Lumbar / L5-S1 -->
                         <div>
                             <div class="flex justify-between font-semibold mb-1">
-                            <label for="input-wellbeing" class="text-slate-300">Bienestar general (1-10)</label>
-                            <span id="val-wellbeing" class="text-emerald-400 font-bold">5/10</span>
+                                <label for="input-pain" class="text-slate-300">Dolor Lumbar L5-S1 (1-10)</label>
+                                <span id="val-pain" class="text-emerald-400 font-bold">1/10</span>
                             </div>
-                        <input type="range" id="input-wellbeing" min="1" max="10" value="5" oninput="document.getElementById('val-wellbeing').textContent = this.value + '/10'" class="w-full accent-emerald-500 bg-slate-800 rounded-lg cursor-pointer h-2">
+                            <input type="range" id="input-pain" min="1" max="10" value="1" oninput="document.getElementById('val-pain').textContent = this.value + '/10'" class="w-full accent-emerald-500 bg-slate-800 rounded-lg cursor-pointer h-2">
                         </div>
 
+                        <!-- Estrés (Cortisol) -->
                         <div>
                             <div class="flex justify-between font-semibold mb-1">
                                 <label for="input-stress" class="text-slate-300">Nivel de Estrés / Carga Mental (1-10)</label>
@@ -314,29 +323,31 @@
                             <input type="range" id="input-stress" min="1" max="10" value="5" oninput="document.getElementById('val-stress').textContent = this.value + '/10'" class="w-full accent-cyan-500 bg-slate-800 rounded-lg cursor-pointer h-2">
                         </div>
 
+                        <!-- Movilidad / Muletas -->
                         <div>
                             <label for="input-mobility" class="block font-semibold text-slate-300 mb-1">Estado de Movilidad Hoy</label>
                             <select id="input-mobility" class="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500">
-                                <option value="Sin cambios">Sin cambios</option>
-                                <option value="Más movimiento">Más movimiento</option>
-                                <option value="Menos movimiento">Menos movimiento</option>
-                                <option value="Descanso">Día de descanso</option>
+                                <option value="Muletas - Uso normal">Uso obligado de muletas (Normal)</option>
+                                <option value="Muletas - Sobrecarga en brazos">Muletas (Sobrecarga hombros/espalda)</option>
+                                <option value="Silla/Reposo">Mayor tiempo en reposo/silla</option>
+                                <option value="Ligera mejoría">Ligera mejoría de apoyo</option>
                             </select>
                         </div>
 
+                        <!-- Cumplimiento Dieta -->
                         <div>
-                            <label for="input-diet-adherence" class="block font-semibold text-slate-300 mb-1">Seguimiento de mi plan personal</label>
+                            <label for="input-diet-adherence" class="block font-semibold text-slate-300 mb-1">Adherencia Nutricional</label>
                             <select id="input-diet-adherence" class="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500">
-                                <option value="Completado">Completado</option>
-                                <option value="Parcial">Parcial</option>
-                                <option value="No realizado">No realizado</option>
+                                <option value="100% Estricto">100% Estricto (Sin grasas prohibidas)</option>
+                                <option value="80% Bueno">80% Aceptable (Pequeño desvío)</option>
+                                <option value="No cumplido">No cumplido</option>
                             </select>
                         </div>
 
                         <!-- Notas y observaciones -->
                         <div>
-                            <label for="input-notes" class="block font-semibold text-slate-300 mb-1">Notas personales</label>
-                            <textarea id="input-notes" rows="3" placeholder="Añade una nota para tu seguimiento privado..." class="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
+                            <label for="input-notes" class="block font-semibold text-slate-300 mb-1">Notas, sensaciones o juicios pendientes</label>
+                            <textarea id="input-notes" rows="3" placeholder="Escribe si sentiste molestia, tensión por estrés o progreso en vacíos..." class="w-full bg-slate-800 border border-slate-700 text-slate-200 rounded-lg p-2.5 focus:ring-2 focus:ring-emerald-500 focus:outline-none"></textarea>
                         </div>
 
                         <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl transition shadow flex items-center justify-center gap-2 text-sm">
@@ -363,7 +374,7 @@
             </div>
         </section>
 
-        <!-- TAB 4: RECORDATORIO DE USO RESPONSABLE -->
+        <!-- TAB 4: ASESOR IA CLÍNICO CON LÓGICA Y RAZONES -->
         <section id="tab-ai" class="hidden space-y-6">
             <div class="bg-gradient-to-r from-slate-900 via-slate-900 to-cyan-950/40 rounded-2xl border border-slate-800 p-6 shadow-md">
                 <div class="flex items-start space-x-4">
@@ -372,52 +383,66 @@
                     </div>
                     <div>
                         <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                            Resumen de seguimiento
+                            Motor Clínico Adaptativo
                         </h2>
                         <p class="text-xs text-slate-400 mt-1 leading-relaxed">
-                            Este panel no realiza diagnósticos ni genera recomendaciones clínicas. Tus registros sirven únicamente como diario personal y permanecen en este navegador.
+                            Este motor evalúa tus variables fisiológicas guardadas (nivel de dolor L5-S1, respuesta al estrés/cortisol, rodilla crónica y colesterol) y genera recomendaciones adaptadas basadas exclusivamente en evidencia biomecánica y tu perfil médico.
                         </p>
                     </div>
                 </div>
             </div>
 
+            <!-- Botón para recalcular diagnóstico -->
             <div class="flex justify-end">
                 <button onclick="runAiAnalysis()" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold px-4 py-2 rounded-xl text-xs sm:text-sm flex items-center gap-2 transition shadow">
-                    <i class="fa-solid fa-rotate"></i> Mostrar aviso de uso
+                    <i class="fa-solid fa-microchip"></i> Analizar Estado Actual y Recalcular
                 </button>
             </div>
 
+            <!-- Contenedor de Diagnósticos Razonados -->
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4" id="ai-reasons-container">
-                <!-- Non-diagnostic privacy and safety notice -->
+                <!-- Dynamic reasoning cards -->
             </div>
         </section>
 
     </main>
 
-    <!-- Safety notice; this app does not provide emergency or medical advice. -->
+    <!-- MODAL DE PÁNICO Y ALERTA DE DOLOR 🚨 -->
     <div id="modal-panic" class="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 hidden flex items-center justify-center p-4">
         <div class="bg-slate-900 border-2 border-red-600 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in fade-in zoom-in duration-200">
             <div class="flex items-center space-x-3 text-red-500 border-b border-slate-800 pb-3">
                 <i class="fa-solid fa-circle-exclamation text-3xl"></i>
                 <div>
-                    <h3 class="text-lg font-extrabold text-white">Aviso de seguridad</h3>
-                    <p class="text-xs text-red-400">Esta aplicación no puede evaluar síntomas ni emergencias</p>
+                    <h3 class="text-lg font-extrabold text-white">PROTOCOLO DE EMERGENCIA L5-S1</h3>
+                    <p class="text-xs text-red-400">Interrupción Inmediata por Dolor o Ciática</p>
                 </div>
             </div>
 
             <div class="space-y-3 text-xs text-slate-300">
                 <p class="bg-red-950/40 p-3 rounded-xl border border-red-800/50 text-red-200 font-semibold">
-                    Si te preocupa un síntoma o crees que existe una emergencia, contacta con un profesional sanitario o con los servicios de emergencia de tu zona.
+                    ¡Si sientes un dolor punzante, descarga eléctrica o calambre en glúteo/pierna, DETÉN TODO EJERCICIO INMEDIATAMENTE!
                 </p>
-                <p class="text-slate-300">SOMA Guard es una herramienta de registro personal. No diagnostica ni recomienda tratamientos, alimentación o ejercicios.</p>
+
+                <h4 class="font-bold text-slate-100 text-sm">Pasos Inmediatos de Descarga Discal:</h4>
+                <ol class="list-decimal list-inside space-y-2 text-slate-300">
+                    <li class="bg-slate-800 p-2.5 rounded-lg border border-slate-700">
+                        <strong class="text-emerald-400">Postura de Descarga:</strong> Túmbate boca arriba en la cama o alfombra con 2 almohadas grandes bajo las rodillas para descompresionar la vértebra L5-S1.
+                    </li>
+                    <li class="bg-slate-800 p-2.5 rounded-lg border border-slate-700">
+                        <strong class="text-cyan-400">Crioterapia:</strong> Aplica bolsa de hielo envuelta en un paño fino en la zona lumbar durante 15 minutos.
+                    </li>
+                    <li class="bg-slate-800 p-2.5 rounded-lg border border-slate-700">
+                        <strong class="text-amber-400">Respiración Anti-Cortisol:</strong> Realiza inspiraciones lentas de 4 segundos y exhalaciones de 6 segundos para desactivar el tono muscular spasmo.
+                    </li>
+                </ol>
             </div>
 
             <div class="flex flex-col sm:flex-row gap-2 pt-2 border-t border-slate-800">
-                <button onclick="closePanicModal(); switchTab('tab-log')" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-xs transition">
-                    Ir al registro
+                <button onclick="registerPainEpisode()" class="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-2.5 rounded-xl text-xs transition">
+                    Registrar Episodio de Dolor Fuerte
                 </button>
                 <button onclick="closePanicModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition border border-slate-700">
-                    Cerrar
+                    Cerrar Protocolo
                 </button>
             </div>
         </div>
@@ -438,7 +463,7 @@
             <div class="space-y-4">
                 <div class="bg-slate-950 p-4 rounded-xl border border-slate-800">
                     <h4 class="text-sm font-bold text-emerald-400 mb-2"><i class="fa-solid fa-database"></i> Copia de Seguridad</h4>
-                    <p class="text-xs text-slate-400 mb-4">Exporta tus datos y configuración para conservarlos si borras los datos del navegador.</p>
+                    <p class="text-xs text-slate-400 mb-4">Exporta tu progreso y configuración clínica para no perderlos si borras los datos del navegador.</p>
                     <div class="space-y-2">
                         <button onclick="exportData()" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-semibold py-2 rounded-lg text-sm border border-slate-700 transition flex items-center justify-center gap-2">
                             <i class="fa-solid fa-download"></i> Exportar Datos (JSON)
@@ -460,36 +485,161 @@
     </div>
 
     <script>
-        // Public defaults are intentionally empty; users add their own plan.
+        // DATASET JSON RECIBIDO DE LA ESPECIFICACIÓN
         const DEFAULT_HEALTH_DATA = {
-            "usuario": {},
-            "plan_rutinas": {
-                "bloque_a": {
-                    "nombre_bloque": "Rutina personal",
-                    "dias": ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"],
-                    "frecuencia": "Sin frecuencia configurada.",
-                    "ejercicios": []
+            "usuario": {
+                "condicion_fisica": {
+                    "sobrepeso_kg": 40,
+                    "movilidad": "Reducida, uso de muletas obligado por secuelas de accidente",
+                    "perfil_antropometrico": "Estructura ósea buena, grasa concentrada en zona abdominal y lumbar",
+                    "estado_hormonal": "Cortisol elevado debido a estrés crónico (juicios pendientes con empresa)"
                 },
-                "bloque_b": {
-                    "nombre_bloque": "Actividad personal",
-                    "dias": [],
-                    "objetivo": "Sin elementos configurados.",
-                    "ejercicios": []
-                },
-                "bloque_c": {
-                    "nombre_bloque": "Bloque personal",
-                    "dias": [],
-                    "ejercicios": []
+                "patologias_medicas": {
+                    "columna": "Hernia discal en L5-S1 con dolor activo reciente por flexión abdominal",
+                    "rodilla": "Lesión crónica de rodilla (prohibido por completo el impacto o soporte de peso)",
+                    "cardiovascular": "Colesterol alto por herencia genética (en tratamiento con medicación)"
                 }
             },
-            "plan_personal": {
-                "descripcion": "Sin elementos configurados.",
-                "categorias": {
-                    "categoria_a": [],
-                    "categoria_b": [],
-                    "categoria_c": []
+            "restricciones_criticas_ejercicio": [
+                "PROHIBIDO: Flexiones abdominales tradicionales (crunches) o giros de columna",
+                "PROHIBIDO: Ejercicios de pie que carguen peso sobre la rodilla lesionada",
+                "OBLIGATORIO: Mantener siempre la columna neutra (recta)",
+                "OBLIGATORIO: Detener la actividad ante cualquier dolor punzante o calambre en la pierna/glúteo (ciática)"
+            ],
+            "plan_ejercicios_ciclico": {
+                "bloque_a_fuerza_y_malla_abdominal": {
+                    "nombre_bloque": "Bloque A: Fuerza y Malla Abdominal Isométrica",
+                    "dias": ["Lunes", "Miércoles", "Viernes"],
+                    "frecuencia": "Preferiblemente mañana, antes de comer",
+                    "ejercicios": [
+                        {
+                            "nombre": "Vacío Abdominal (Succión)",
+                            "objetivo": "Fortalecer transverso (malla interna) y reducir perímetro sin mover la espalda",
+                            "ejecucion": "Tumbado boca arriba con rodillas flexionadas. Soltar todo el aire, esconder la barriga hacia dentro y hacia arriba (apnea)",
+                            "pauta": "5 repeticiones de 5 a 10 segundos. Descanso de 45 segundos entre series",
+                            "progresion": "Subir a 15-20 segundos o pasar a realizarlo sentado manteniendo la espalda apoyada",
+                            "duracion_seg": 10,
+                            "descanso_seg": 45,
+                            "series": 5
+                        },
+                        {
+                            "nombre": "Bracing Abdominal",
+                            "objetivo": "Generar faja de protección intraabdominal y evitar eventraciones",
+                            "ejecucion": "Sentado con espalda recta apoyada. Poner el abdomen duro como una piedra simulando recibir un golpe mientras se respira normal",
+                            "pauta": "4 series de 15 segundos. Descanso de 1 minuto",
+                            "duracion_seg": 15,
+                            "descanso_seg": 60,
+                            "series": 4
+                        },
+                        {
+                            "nombre": "Flexiones en Pared (Wall Push-ups)",
+                            "objetivo": "Fuerza de tren superior manteniendo bloque core rígido",
+                            "ejecucion": "Manos en pared a altura del pecho, cuerpo alineado como una tabla sin doblar la lumbar",
+                            "pauta": "3 series de 10 a 12 repeticiones",
+                            "duracion_seg": 30,
+                            "descanso_seg": 45,
+                            "series": 3
+                        },
+                        {
+                            "nombre": "Bicho Muerto (Dead Bug) Estático",
+                            "objetivo": "Activación abdominal isométrica segura para L5-S1",
+                            "ejecucion": "Tumbado boca arriba, empujar la zona lumbar contra el suelo eliminando cualquier hueco. Brazos al techo, piernas quietas",
+                            "pauta": "3 series de 20 segundos",
+                            "duracion_seg": 20,
+                            "descanso_seg": 45,
+                            "series": 3
+                        }
+                    ]
                 },
-                "agenda": {}
+                "bloque_b_cardio_adaptado": {
+                    "nombre_bloque": "Bloque B: Cardio Adaptado y Quema de Cortisol",
+                    "dias": ["Martes", "Jueves", "Sábado"],
+                    "objetivo": "Gasto calórico y reducción de cortisol sin impacto",
+                    "ejercicios": [
+                        {
+                            "nombre": "Boxeo Sombra (Shadow Boxing) Sentado",
+                            "ejecucion": "Sentado con espalda apoyada en silla firme. Lanza puñetazos al frente a ritmo rápido y constante",
+                            "pauta": "4 series de 1 minuto de actividad por 1 minuto de descanso activo",
+                            "duracion_seg": 60,
+                            "descanso_seg": 60,
+                            "series": 4
+                        },
+                        {
+                            "nombre": "Movimiento del Remero (Sin carga)",
+                            "ejecucion": "Sentado, estirar brazos al frente y llevarlos hacia atrás juntando las escápulas a ritmo alegre",
+                            "pauta": "3 series de 20 repeticiones",
+                            "duracion_seg": 45,
+                            "descanso_seg": 45,
+                            "series": 3
+                        }
+                    ]
+                },
+                "bloque_c_descanso_activo": {
+                    "nombre_bloque": "Bloque C: Descanso Activo y Hidratación Discal",
+                    "dias": ["Domingo"],
+                    "ejercicios": [
+                        {
+                            "nombre": "Postura de Descarga Discal",
+                            "ejecucion": "Tumbado boca arriba en suelo/cama con dos almohadas grandes bajo las rodillas para hidratar el disco L5-S1",
+                            "pauta": "15 a 20 minutos de relajación profunda",
+                            "duracion_seg": 900,
+                            "descanso_seg": 0,
+                            "series": 1
+                        }
+                    ]
+                }
+            },
+            "plan_nutricional_deficit_calorico": {
+                "estrategia_general": "Método del plato (50% verdura con fibra soluble, 25% proteína limpia, 25% carbohidrato complejo). Dieta antiinflamatoria, cardioprotectora y baja en grasa saturada. Cocinar en cantidad (Batch cooking).",
+                "pautas_ingredientes_permitidos": {
+                    "via_libre": ["Ajo (cardioprotector y sabor)", "Verduras congeladas o de bote (brócoli, espinacas, calabacín, cremas caseras)"],
+                    "control_calorico": ["Aguacate (Máximo 1/4 o 1/2 al día, reduciendo aceite de oliva)", "Aceite de Oliva Virgen Extra (Límite 2-3 cucharadas soperas al día)"],
+                    "control_colesterol_y_sal": ["Jamón serrano (Solo magro, retirar grasa blanca, 2-3 lonchas, uso esporádico)", "Queso de untar (Estrictamente versión Light o 0% grasa)"]
+                },
+                "menu_semanal": {
+                    "Lunes": {
+                        "desayuno": "Café o infusión sin azúcar + Bol de avena integral cocida con agua/leche desnatada, canela y 4 nueces",
+                        "comida": "Lentejas cocidas de bote salteadas con champiñones y tiras de pechuga de pollo (1 cucharada de aceite)",
+                        "merienda": "Yogur griego natural o queso batido 0% con una cucharadita de semillas de chía",
+                        "cena": "Crema de calabacín y puerro casera + Tortilla francesa de 2 huevos con espinacas frescas"
+                    },
+                    "Martes": {
+                        "desayuno": "Café o infusión sin azúcar + Tortilla de 1 huevo entero y 2 claras con espinacas",
+                        "comida": "Salmón a la plancha/horno + Vasito de arroz integral microondas + Brócoli al vapor",
+                        "merienda": "Una pieza de fruta (manzana/pera) + 4 nueces",
+                        "cena": "Crema de calabacín sobrante + Filete de merluza al microondas con ajo en polvo y un hilo de aceite"
+                    },
+                    "Miércoles": {
+                        "desayuno": "Café o infusión sin azúcar + Bol de avena integral con canela, manzana troceada y 4 nueces",
+                        "comida": "Ensalada de garbanzos de bote con tomate, canónigos y una lata de caballa en conserva bien escurrida",
+                        "merienda": "Yogur griego natural o queso batido 0% con semillas de lino o chía",
+                        "cena": "Crema de calabaza y zanahoria + Revuelto de claras de huevo con champiñones al ajillo"
+                    },
+                    "Jueves": {
+                        "desayuno": "Café o infusión sin azúcar + Tortilla de 2 huevos con champiñones",
+                        "comida": "Pechuga de pavo a la plancha + Patata grande cocida al microondas + Ensalada de tomate y rúcula",
+                        "merienda": "Una pieza de fruta + 4 nueces",
+                        "cena": "Crema de calabaza sobrante + Lata de sardinas en conserva (bien escurridas) con bastones de zanahoria"
+                    },
+                    "Viernes": {
+                        "desayuno": "Café o infusión sin azúcar + Bol de avena integral con canela y 4 nueces",
+                        "comida": "Filete de bacalao a la plancha + Brócoli al vapor + Vasito de quinoa para microondas",
+                        "merienda": "Yogur griego natural con semillas de chía",
+                        "cena": "Crema de verduras libre + Tortilla francesa de 2 huevos con una lata de atún al natural"
+                    },
+                    "Sábado": {
+                        "desayuno": "Café o infusión sin azúcar + Revuelto de 1 huevo y 2 claras con espinacas",
+                        "comida": "Lentejas ligeras (bote de lentejas cocidas hervidas 10 min con tomate triturado, calabacín, zanahoria y pechuga de pollo)",
+                        "merienda": "Una manzana + 4 nueces",
+                        "cena": "Filete de merluza o lenguado a la plancha con ensalada de canónigos y tomate"
+                    },
+                    "Domingo": {
+                        "desayuno": "Café o infusión sin azúcar + Bol de avena integral con canela y fruta troceada",
+                        "comida": "Salmón al horno + Patata asada + Rodajas de tomate aliñadas con ajo y pizca de aceite",
+                        "merienda": "Yogur griego natural con 4 nueces",
+                        "cena": "Caldo ligero, crema de verduras sobrante o revuelto de claras de huevo"
+                    }
+                }
             }
         };
 
@@ -564,34 +714,31 @@
 
         function renderNutritionTab() {
             // General Strategy
-            const plan = HEALTH_DATA.plan_personal || DEFAULT_HEALTH_DATA.plan_personal;
-            document.getElementById('nutrition-strategy-desc').textContent = plan.descripcion;
+            document.getElementById('nutrition-strategy-desc').textContent = HEALTH_DATA.plan_nutricional_deficit_calorico.estrategia_general;
 
-            const categories = plan.categorias || {};
-            document.getElementById('plan-category-a').textContent =
-                (categories.categoria_a || []).join(', ');
-            document.getElementById('plan-category-b').textContent =
-                (categories.categoria_b || []).join(', ');
-            document.getElementById('plan-category-c').textContent =
-                (categories.categoria_c || []).join(', ');
+            // Ingredients guidelines
+            const pautas = HEALTH_DATA.plan_nutricional_deficit_calorico.pautas_ingredientes_permitidos;
+            document.getElementById('pautas-via-libre').textContent = pautas.via_libre.join(', ');
+            document.getElementById('pautas-control-calorias').textContent = pautas.control_calorico.join(', ');
+            document.getElementById('pautas-colesterol').textContent = pautas.control_colesterol_y_sal.join(', ');
 
             // Meals for active day
             document.getElementById('current-day-label').textContent = currentDay;
-            const meals = (plan.agenda || {})[currentDay] || {};
+            const meals = HEALTH_DATA.plan_nutricional_deficit_calorico.menu_semanal[currentDay] || {};
             const container = document.getElementById('meals-container');
             container.innerHTML = '';
 
             const mealKeys = [
-                { key: 'elemento_1', title: 'Elemento 1', icon: 'fa-list', color: 'text-amber-400' },
-                { key: 'elemento_2', title: 'Elemento 2', icon: 'fa-list', color: 'text-emerald-400' },
-                { key: 'elemento_3', title: 'Elemento 3', icon: 'fa-list', color: 'text-cyan-400' },
-                { key: 'elemento_4', title: 'Elemento 4', icon: 'fa-list', color: 'text-indigo-400' }
+                { key: 'desayuno', title: 'Desayuno', icon: 'fa-sun', color: 'text-amber-400' },
+                { key: 'comida', title: 'Comida', icon: 'fa-utensils', color: 'text-emerald-400' },
+                { key: 'merienda', title: 'Merienda', icon: 'fa-mug-hot', color: 'text-cyan-400' },
+                { key: 'cena', title: 'Cena', icon: 'fa-moon', color: 'text-indigo-400' }
             ];
 
             let completedCount = 0;
 
             mealKeys.forEach(m => {
-                const mealText = meals[m.key] || "Sin configurar";
+                const mealText = meals[m.key] || "No especificado";
                 const mealId = `${currentDay}_${m.key}`;
                 const isChecked = !!userState.completedMeals[mealId];
 
@@ -635,31 +782,26 @@
         }
 
         function getBlockForDay(day) {
-            const plan = HEALTH_DATA.plan_rutinas || DEFAULT_HEALTH_DATA.plan_rutinas;
-            for (const key of ['bloque_a', 'bloque_b', 'bloque_c']) {
-                const block = plan[key] || DEFAULT_HEALTH_DATA.plan_rutinas[key];
-                if ((block.dias || []).includes(day)) {
-                    return { key, ...block, badge: `BLOQUE ${key.slice(-1).toUpperCase()}` };
-                }
+            const plan = HEALTH_DATA.plan_ejercicios_ciclico;
+            if (plan.bloque_a_fuerza_y_malla_abdominal.dias.includes(day)) {
+                return { key: 'bloque_a', ...plan.bloque_a_fuerza_y_malla_abdominal, badge: 'BLOQUE A - FUERZA & CORE' };
+            } else if (plan.bloque_b_cardio_adaptado.dias.includes(day)) {
+                return { key: 'bloque_b', ...plan.bloque_b_cardio_adaptado, badge: 'BLOQUE B - CARDIO SENTADO' };
+            } else {
+                return { key: 'bloque_c', ...plan.bloque_c_descanso_activo, badge: 'BLOQUE C - DESCANSO DISCAL' };
             }
-            return {
-                key: 'bloque_c',
-                ...(plan.bloque_c || DEFAULT_HEALTH_DATA.plan_rutinas.bloque_c),
-                badge: 'BLOQUE C'
-            };
         }
 
         function renderExerciseTab() {
             const block = getBlockForDay(currentDay);
             document.getElementById('exercise-block-badge').textContent = block.badge;
             document.getElementById('exercise-block-title').textContent = block.nombre_bloque || block.objetivo || "Rutina Adaptada";
-            document.getElementById('exercise-block-freq').textContent =
-                block.frecuencia || block.objetivo || "Sin frecuencia configurada.";
+            document.getElementById('exercise-block-freq').textContent = block.frecuencia || block.objetivo || "Ejecutar con control postural estricto";
 
             const container = document.getElementById('exercise-list-container');
             container.innerHTML = '';
 
-            (block.ejercicios || []).forEach((ex, idx) => {
+            block.ejercicios.forEach((ex, idx) => {
                 const exId = `${currentDay}_ex_${idx}`;
                 const isDone = !!userState.completedExercises[exId];
 
@@ -789,10 +931,10 @@
 
         function saveDailyLog(e) {
             e.preventDefault();
-            const wellbeing = Number(document.getElementById('input-wellbeing').value);
+            const pain = document.getElementById('input-pain').value;
             const stress = document.getElementById('input-stress').value;
             const mobility = document.getElementById('input-mobility').value;
-            const planFollowThrough = document.getElementById('input-diet-adherence').value;
+            const diet = document.getElementById('input-diet-adherence').value;
             const notes = document.getElementById('input-notes').value;
 
             const now = new Date();
@@ -801,10 +943,10 @@
                 timestamp: Date.now(), // Guardar el timestamp real para la racha y análisis
                 date: now.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
                 day: currentDay,
-                wellbeing: wellbeing,
-                stress: Number(stress),
+                pain: parseInt(pain),
+                stress: parseInt(stress),
                 mobility: mobility,
-                planFollowThrough: planFollowThrough,
+                diet: diet,
                 notes: notes
             };
 
@@ -844,32 +986,23 @@
             }
 
             userState.history.forEach(item => {
-                const wellbeing = Number(item.wellbeing ?? item.pain ?? 0);
+                const painColor = item.pain > 5 ? 'text-red-400 bg-red-950/30 border-red-800/50' : 'text-emerald-400 bg-emerald-950/30 border-emerald-800/50';
                 const card = document.createElement('div');
                 card.className = 'bg-slate-950 p-3.5 rounded-xl border border-slate-800 text-xs space-y-2';
-                const heading = document.createElement('p');
-                heading.className = 'font-bold text-slate-300';
-                heading.textContent = `${item.date || ''} (${item.day || ''})`;
-                card.appendChild(heading);
-
-                const metrics = document.createElement('p');
-                metrics.className = 'text-slate-400';
-                metrics.textContent =
-                    `Bienestar: ${wellbeing}/10 · Estrés: ${Number(item.stress) || 0}/10`;
-                card.appendChild(metrics);
-
-                const details = document.createElement('p');
-                details.className = 'text-slate-400';
-                details.textContent =
-                    `Actividad: ${item.mobility || 'Sin especificar'} · Plan: ${item.planFollowThrough || item.diet || 'Sin especificar'}`;
-                card.appendChild(details);
-
-                if (item.notes) {
-                    const notes = document.createElement('p');
-                    notes.className = 'text-slate-300 bg-slate-900/60 p-2 rounded border border-slate-800/60 italic';
-                    notes.textContent = item.notes;
-                    card.appendChild(notes);
-                }
+                card.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <span class="font-bold text-slate-300">${item.date} (${item.day})</span>
+                        <div class="flex items-center space-x-2">
+                            <span class="px-2 py-0.5 rounded border ${painColor} font-bold">Dolor L5-S1: ${item.pain}/10</span>
+                            <span class="px-2 py-0.5 rounded border bg-slate-800 text-cyan-300 border-slate-700">Estrés: ${item.stress}/10</span>
+                        </div>
+                    </div>
+                    <div class="flex flex-wrap gap-2 text-[11px] text-slate-400">
+                        <span class="bg-slate-900 px-2 py-1 rounded border border-slate-800"><i class="fa-solid fa-person-crutches mr-1"></i>${item.mobility}</span>
+                        <span class="bg-slate-900 px-2 py-1 rounded border border-slate-800"><i class="fa-solid fa-utensils mr-1"></i>Dieta: ${item.diet}</span>
+                    </div>
+                    ${item.notes ? `<p class="text-slate-300 bg-slate-900/60 p-2 rounded border border-slate-800/60 italic">${item.notes}</p>` : ''}
+                `;
                 container.appendChild(card);
             });
         }
@@ -885,13 +1018,100 @@
         function runAiAnalysis() {
             const container = document.getElementById('ai-reasons-container');
             container.innerHTML = '';
-            const summary = document.createElement('p');
-            summary.className = 'p-4 rounded-2xl border border-slate-800 bg-slate-900 text-xs text-slate-300';
-            const latest = userState.history[0];
-            summary.textContent = latest
-                ? `Tienes ${userState.history.length} registros. El más reciente es del ${latest.date || 'día no especificado'}. Este resumen no interpreta tus datos.`
-                : 'Todavía no hay registros. Cuando añadas uno, aquí verás únicamente un resumen de actividad.';
-            container.appendChild(summary);
+
+            // Extract latest log if available
+            const latest = userState.history[0] || { pain: 2, stress: 6, diet: '100% Estricto' };
+
+            const aiInsights = [];
+
+            // 1. L5-S1 Spine Reasoning
+            if (latest.pain >= 6) {
+                aiInsights.push({
+                    title: "🚨 Alerta Spine Guard: Dolor Lumbar Elevado (" + latest.pain + "/10)",
+                    type: "danger",
+                    icon: "fa-triangle-exclamation",
+                    reasoning: "Debido a tu hernia L5-S1 con dolor activo reciente, la prioridad absoluta es la descompresión. Se recomienda sustituir temporalmente las Flexiones en Pared por la Postura de Descarga Discal con almohadas bajo rodillas durante 20 minutos.",
+                    action: "Rutina modificada automáticamente a modo Alivio Discal."
+                });
+            } else {
+                aiInsights.push({
+                    title: "🛡️ Malla Intraabdominal Segura (Dolor L5-S1 Bajo: " + latest.pain + "/10)",
+                    type: "success",
+                    icon: "fa-shield-halved",
+                    reasoning: "Tus niveles de dolor permiten la activación isómetrica del transverso mediante Vacíos Abdominales y Bracing. Recuerda evitar cualquier tipo de flexión lumbar (crunches prohibidos).",
+                    action: "Continuar con Bloque A sin sobrepasar los 10s por apnea."
+                });
+            }
+
+            // 2. Stress & Cortisol Hormone Reasoning
+            if (latest.stress >= 7) {
+                aiInsights.push({
+                    title: "🧠 Modulación de Cortisol y Estrés (" + latest.stress + "/10)",
+                    type: "warning",
+                    icon: "fa-brain",
+                    reasoning: "El estrés crónico (asociado a procesos judiciales/laborales) eleva el cortisol, dificultando la pérdida de grasa visceral y aumentando la inflamación discal. El Boxeo Sombra Sentado moderado ayuda a quemar glucógeno sin impacto ni carga lumbar.",
+                    action: "Priorizar respiración diafragmática de 4s/6s tras el ejercicio."
+                });
+            } else {
+                aiInsights.push({
+                    title: "⚖ Balance Hormonal Estable",
+                    type: "info",
+                    icon: "fa-scale-balanced",
+                    reasoning: "Carga de estrés bajo control. Esto favorece la síntesis proteica y reduce el entorno inflamatorio sistémico.",
+                    action: "Mantener pauta de caminata con muletas si la rodilla lo tolera."
+                });
+            }
+
+            // 3. Knee Protection Reasoning
+            aiInsights.push({
+                title: "🦵 Protección Estricta Articulación Rodilla",
+                type: "info",
+                icon: "fa-joint",
+                reasoning: "Dada tu lesión crónica con prohibición total de carga de peso e impacto, todos los ejercicios cardio se mantendrán en posición SENTADO (Silla firme) o en el suelo boca arriba.",
+                action: "Cero impacto garantizado en los Bloques B y C."
+            });
+
+            // 4. Cardiovascular & Cholesterol Strategy
+            aiInsights.push({
+                title: "❤️ Estrategia Hipolipemiante (Colesterol)",
+                type: "success",
+                icon: "fa-heart-pulse",
+                reasoning: "Al combinar medicación con fibra soluble (avena, lentejas, chía) y limitar grasa saturada (queso 0%, sacar grasa blanca del jamón), optimizamos el perfil de lipoproteínas hepáticas.",
+                action: "Asegurar ingesta diaria de 4 nueces (ácidos grasos Omega-3)."
+            });
+
+            // Render cards
+            aiInsights.forEach(item => {
+                let borderClass = "border-slate-800 bg-slate-900";
+                let textClass = "text-slate-200";
+                let iconColor = "text-emerald-400";
+
+                if (item.type === 'danger') {
+                    borderClass = "border-red-800/60 bg-red-950/20";
+                    iconColor = "text-red-400";
+                } else if (item.type === 'warning') {
+                    borderClass = "border-amber-800/60 bg-amber-950/20";
+                    iconColor = "text-amber-400";
+                } else if (item.type === 'info') {
+                    borderClass = "border-cyan-800/60 bg-cyan-950/20";
+                    iconColor = "text-cyan-400";
+                }
+
+                const card = document.createElement('div');
+                card.className = `p-4 rounded-2xl border ${borderClass} shadow-sm space-y-2 text-xs`;
+                card.innerHTML = `
+                    <div class="flex items-center space-x-2 font-bold text-sm ${iconColor}">
+                        <i class="fa-solid ${item.icon}"></i>
+                        <span>${item.title}</span>
+                    </div>
+                    <p class="text-slate-300 leading-relaxed">${item.reasoning}</p>
+                    <div class="pt-2 border-t border-slate-800/60 font-semibold text-slate-400 flex items-center gap-1.5">
+                        <i class="fa-solid fa-angles-right text-emerald-400"></i>
+                        <span>Acción Recomendada: ${item.action}</span>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
         }
 
         function openPanicModal() {
@@ -901,6 +1121,28 @@
 
         function closePanicModal() {
             document.getElementById('modal-panic').classList.add('hidden');
+        }
+
+        function registerPainEpisode() {
+            const now = new Date();
+            const entry = {
+                id: Date.now(),
+                timestamp: Date.now(),
+                date: now.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
+                day: currentDay,
+                pain: 9,
+                stress: 8,
+                mobility: 'Interrupción por Dolor Agudo',
+                diet: 'En seguimiento',
+                notes: '🚨 ALERTA DE DOLOR: Activación de protocolo de descompresión discal L5-S1 y crioterapia.'
+            };
+            userState.history.unshift(entry);
+            saveStateToLocalStorage();
+            renderHistoryLog();
+            runAiAnalysis();
+            updateGamificationUI();
+            closePanicModal();
+            switchTab('tab-log');
         }
 
         function addXP(amount) {
@@ -967,7 +1209,7 @@
             document.getElementById('xp-bar').style.width = `${currentLevelXP}%`;
 
             // Dynamic Rank Titles
-            const ranks = ["Nivel inicial", "En progreso", "Constante", "Avanzado", "Maestro"];
+            const ranks = ["Iniciando Escudo", "Protector L5-S1", "Guerrero Antinflamatorio", "Dominador del Core Isométrico", "Maestro de Salud Integral"];
             const rankIndex = Math.min(Math.floor((userState.level - 1) / 2), ranks.length - 1);
             document.getElementById('user-rank').textContent = ranks[rankIndex];
         }
@@ -985,32 +1227,11 @@
             try {
                 const saved = localStorage.getItem('somaguard_user_state');
                 if (saved) {
-                    const parsedState = JSON.parse(saved);
-                    if (parsedState && typeof parsedState === 'object') {
-                        userState = {
-                            ...userState,
-                            ...parsedState,
-                            completedMeals: parsedState.completedMeals || {},
-                            completedExercises: parsedState.completedExercises || {},
-                            history: Array.isArray(parsedState.history)
-                                ? parsedState.history
-                                : []
-                        };
-                    }
+                    userState = JSON.parse(saved);
                 }
                 const savedHealth = localStorage.getItem('somaguard_health_data');
                 if (savedHealth) {
-                    const parsedHealth = JSON.parse(savedHealth);
-                    if (
-                        parsedHealth &&
-                        parsedHealth.plan_personal &&
-                        parsedHealth.plan_rutinas
-                    ) {
-                        HEALTH_DATA = {
-                            ...DEFAULT_HEALTH_DATA,
-                            ...parsedHealth
-                        };
-                    }
+                    HEALTH_DATA = JSON.parse(savedHealth);
                 }
             } catch (e) {
                 console.error("Could not load from LocalStorage", e);

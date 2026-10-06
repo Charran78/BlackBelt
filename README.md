@@ -63,8 +63,9 @@ BlackBelt parte de tres principios:
 | `run chat` | ✅ | Chat interactivo con Ollama local |
 | `run email` | ✅ | Triaje local de Gmail en modo solo lectura |
 | `run apps` | ✅ | SOMA y Ghost Writer en servidor local de loopback |
-| `run feeds` | 🔜 | Lector de feeds RSS |
-| `run search` | 🔜 | Búsqueda semántica con Qdrant |
+| `run meetings` | 🧪 | Dossier CLI y asistente web local desde carpetas permitidas |
+| Feeds RSS en Ghost Writer | ✅ | Tech Radar y Reddit como fuentes para publicaciones |
+| `run search` | 🧪 | Búsqueda híbrida local con Qdrant, BM25 y Ollama |
 
 ---
 
@@ -115,7 +116,12 @@ OLLAMA_NUM_THREAD=2
 OLLAMA_TIMEOUT=180
 
 # Bóveda Obsidian
-# OBSIDIAN_VAULT="/ruta/a/tu/boveda"
+OBSIDIAN_VAULT="/ruta/a/tu/boveda"
+
+# Búsqueda local (opcional; estos son los valores por defecto)
+SEARCH_EMBEDDING_MODEL=nomic-embed-text
+SEARCH_MIN_COSINE_SCORE=0.65
+# BLACKBELT_SEARCH_DIR="/ruta/local/fuera/de/la/boveda"
 ```
 
 ### 2. Archivo YAML (`~/.config/blackbelt/config.yaml`)
@@ -181,6 +187,27 @@ blackbelt run obsidian append "999 - DIARIO/2026-09-30.md" "Línea añadida"
 - Se ignoran carpetas ocultas (`.obsidian`, `.trash`) en búsquedas.
 - Los `\n` en los argumentos se interpretan como saltos reales.
 
+### Preparación de reuniones
+```powershell
+blackbelt run meetings prepare --client CL001
+blackbelt run meetings prepare --client "Nombre exacto del cliente"
+```
+Genera un dossier local y determinista, sin Ollama, Qdrant ni escritura en la bóveda. Solo lee Markdown de `001 - PROYECTOS`, `002 - TAREAS`, `005 - CLIENTES`, `013 - PROPUESTA _PRESUPUESTO` y `019 - REUNIONES`; omite enlaces simbólicos y nunca busca en otras carpetas, incluida `006 - CREDENCIALES`. Las notas relacionadas se incorporan por ID, enlace Obsidian o nombre exacto de cliente, o por coincidencia exacta con un proyecto activo/anterior declarado en la ficha. Las propuestas se muestran completas, incluidos importes y condiciones. Cada fuente muestra su ruta para poder verificarla; no se cachean en la PWA ni salen a servicios externos. Revisa las fuentes y confirma los datos antes de una reunión. La plantilla `Propuesta - Presupuesto` recomienda vincular `cliente` a la ficha CRM existente.
+
+En la PWA puedes guardar una copia Markdown en `020 - DOSSIERES`; el nombre usa la clave del cliente y la fecha (`CL001_YYYY-MM-DD.md`). Si guardas más de una versión el mismo día, añade un sufijo numérico y no sobrescribe la anterior. **Imprimir dossier** prepara una hoja en blanco y abre temporalmente las notas desplegables para incluirlas en papel.
+
+### Búsqueda híbrida local
+```powershell
+ollama pull nomic-embed-text
+blackbelt run search index
+blackbelt run search query "ideas para mejorar la captación de clientes"
+blackbelt run search query "CL001 propuesta web" --limit 10
+blackbelt run search query "qué proyectos tengo en curso"
+```
+Descarga el modelo solo si aún no aparece en `ollama list`. El índice combina vectores de Qdrant local con BM25 de SQLite FTS5 y fusiona sus rankings; no requiere un servidor Qdrant. Usa por defecto el modelo Ollama local `nomic-embed-text`, un umbral coseno de `0.65` para resultados semánticos sin respaldo léxico y `keep_alive=0` para liberar el modelo tras cada lote. Puedes ajustar el umbral con `SEARCH_MIN_COSINE_SCORE`: subirlo reduce falsos positivos a costa de asociaciones semánticas débiles. BM25 ignora palabras vacías comunes en español e inglés y exige coincidencia de dos términos informativos distribuidos por la nota (o uno si la consulta solo tiene uno); también busca en ruta y nombre de archivo, carpeta, encabezados y frontmatter normalizado. Las consultas de inventario como `proyectos`, `mis proyectos` o `qué proyectos tengo en curso` muestran las notas de `001 - PROYECTOS` directamente, sin embeddings; las fichas sin texto se identifican como tales.
+
+Cada nota es una fuente canónica en SQLite, identificada por un ID determinista, ruta, carpeta, título, frontmatter, Wikilinks y hash del archivo. Cada fragmento enlaza a esa fuente e incluye sección jerárquica, ordinal, rango de caracteres y hash propio; Qdrant conserva los mismos metadatos y cada resultado vectorial se contrasta con SQLite antes de mostrarse. La terminal presenta estos datos para volver al pasaje original y verificarlo. Los offsets son posiciones de caracteres en el Markdown decodificado, no posiciones de bytes. El esquema de procedencia v2 crea un índice nuevo versionado; la primera ejecución de `index` reconstruye los embeddings de las notas permitidas y conserva intacta la carpeta del índice anterior. El índice persistente se guarda fuera de la bóveda, en `~/.blackbelt/search` (en Windows, dentro de la carpeta personal); puedes cambiarlo con `BLACKBELT_SEARCH_DIR`. En ejecuciones posteriores compara SHA-256 e incrusta únicamente fuentes modificadas. Se excluyen `000 - PLANTILLAS`, `006 - CREDENCIALES`, carpetas ocultas, enlaces simbólicos y notas mayores de 2 MiB. Las notas y su frontmatter permanecen locales; no se envían a servicios cloud.
+
 ### Linux Mentor
 ```bash
 blackbelt run linux info                       # Info del entorno
@@ -209,22 +236,29 @@ Las recetas ejecutables piden confirmación y pasan por el Gatekeeper. Los servi
 
 ### Aplicaciones locales
 
-SOMA y Ghost Writer se sirven desde un servidor enlazado exclusivamente a `127.0.0.1`. El servidor permanece en primer plano; `Ctrl+C` lo detiene.
+SOMA, Ghost Writer y el asistente de reuniones se sirven desde un servidor enlazado exclusivamente a `127.0.0.1`. El servidor permanece en primer plano; `Ctrl+C` lo detiene.
 
 ```powershell
 blackbelt run apps soma
 blackbelt run apps ghostwriter
+blackbelt run apps meetings
+blackbelt run apps ghostwriter --background
+blackbelt run apps meetings --background
+blackbelt run apps ghostwriter --install-shortcut
+blackbelt run apps --stop
 ```
 
-Cada aplicación tiene un manifiesto, un icono y un Service Worker con ámbito independiente, por lo que Edge o Chrome puede instalar SOMA y Ghost Writer como aplicaciones separadas desde el menú del navegador. Deben abrirse desde estos comandos en `localhost`; abrir directamente los HTML con doble clic no habilita el Service Worker ni la instalación PWA.
+El modo normal mantiene el servidor en primer plano y se detiene con `Ctrl+C`. Meetings utiliza el puerto `8766` por defecto para conservar el origen de su PWA; configúralo con `BLACKBELT_MEETINGS_PORT`. SOMA y Ghost Writer utilizan el puerto `8765`, configurable con `BLACKBELT_WEBAPPS_PORT`; si esta variable global está definida y Meetings no tiene un puerto específico, Meetings la hereda por compatibilidad. `meetings` abre el asistente local en `/meetings/`; también queda disponible en el servidor existente de BlackBelt. `blackbelt run apps meetings --background` reutiliza el servidor local o lo inicia en segundo plano. Si ya instalaste la PWA en Windows, abre su acceso directo de Reuniones; si no, abre el navegador para que puedas instalarla. `--background` también permite abrir la PWA instalada de Ghost Writer o usar el navegador como alternativa. En Windows, `--install-shortcut` crea un acceso directo de escritorio para Ghost Writer. Los servidores iniciados en segundo plano se detienen con `blackbelt run apps --stop`, que solo termina procesos registrados por BlackBelt.
+
+SOMA, Ghost Writer y Reuniones tienen manifiestos e iconos separados; el asistente de reuniones cuenta además con su propio Service Worker, acotado a `/meetings/`. En Edge o Chrome, abre Reuniones desde el comando anterior y pulsa **Instalar app** o usa el menú del navegador (**Instalar BlackBelt Reuniones**). La caché PWA contiene únicamente la pantalla, el manifiesto y el icono; las notas y respuestas de la bóveda nunca se almacenan en ella. La instalación proporciona una ventana e icono propios, pero el servidor local de BlackBelt debe estar activo para consultar Obsidian. Los orígenes `localhost` y `127.0.0.1` se consideran seguros para Service Workers; abrir el HTML con doble clic no funciona.
 
 Ghost Writer permite elegir explícitamente el motor en **Studio de Escritura**. `Local` es la opción predeterminada: usa `GHOSTWRITER_OLLAMA_MODEL`, después `OLLAMA_MODEL` y, si no se configura ninguno, `qwen2.5:0.5b`. Puedes cambiarlo, por ejemplo, a `qwen2.5:1.5b` con `GHOSTWRITER_OLLAMA_MODEL=qwen2.5:1.5b`. `Ollama Cloud` usa `GHOSTWRITER_OLLAMA_CLOUD_MODEL` o, por defecto, `gpt-oss:120b-cloud`; requiere iniciar sesión con `ollama signin`. La selección Cloud pide confirmación antes de cada generación: la fuente y las instrucciones se envían a Ollama Cloud. No hay fallback automático entre motores. La disponibilidad, condiciones y cuotas gratuitas dependen de Ollama y de la cuenta, y pueden cambiar.
 
 Los límites son independientes para no elevar el consumo local: el modo local conserva contexto de 4096 y salida de 2048 tokens (`GHOSTWRITER_NUM_CTX`, `GHOSTWRITER_NUM_PREDICT`). Cloud usa contexto de 32768 y salida de 8192 tokens de forma predeterminada, configurable con `GHOSTWRITER_CLOUD_NUM_CTX` y `GHOSTWRITER_CLOUD_NUM_PREDICT` (salida máxima admitida: 16384 tokens). BlackBelt acepta respuestas de hasta 100000 caracteres para que el borrador largo no se rechace al volver del servicio. Ollama puede aplicar límites propios del modelo o del servicio, así que una cuota o límite remoto aún puede interrumpir la generación. Ambos modos aplican penalización de repetición (`repeat_penalty=1.18`, `repeat_last_n=128`). `OLLAMA_KEEP_ALIVE` conserva `0` por defecto. El timeout e hilos se pueden ajustar con `GHOSTWRITER_TIMEOUT` y `OLLAMA_NUM_THREAD`.
 
-El botón **Guardar en bóveda** crea la nota directamente en `OBSIDIAN_VAULT/013 - PUBLICACIONES`; el servidor devuelve solo la ruta relativa, no la ruta local completa. El nombre combina fecha, plataforma y el título del frontmatter. No sobrescribe notas: si ya existe una nota con el mismo nombre, crea otra con un sufijo numérico. La carpeta debe existir y estar disponible para escritura. `GHOSTWRITER_OBSIDIAN_SUBDIR` permite cambiar el destino por otra ruta relativa dentro de la bóveda. Si la bóveda está en una carpeta sincronizada, BlackBelt escribe en la carpeta local y el cliente de sincronización se encarga de subir los cambios; no se conecta a la API del proveedor. **Descargar .MD** permanece disponible como alternativa manual.
+El botón **Guardar en bóveda** crea la nota dentro de `OBSIDIAN_VAULT`; el servidor devuelve solo la ruta relativa, no la ruta local completa. El nombre combina fecha, plataforma y el título del frontmatter. No sobrescribe notas: si ya existe una nota con el mismo nombre, crea otra con un sufijo numérico. La carpeta debe existir y estar disponible para escritura. `GHOSTWRITER_LINKEDIN_SUBDIR` y `GHOSTWRITER_SUBSTACK_SUBDIR` permiten configurar destinos distintos, relativos a la bóveda. El lanzador carga opcionalmente `.env.personalizaciones` después de `.env`; ese archivo está excluido de Git y sirve para preferencias locales de autor, etiquetas y carpetas. **Descargar .MD** permanece disponible como alternativa manual.
 
-El Tech Radar consulta feeds RSS y puede recurrir a proxies públicos cuando el navegador bloquea el acceso directo. Tailwind, iconos, fuentes y el renderizador Markdown también se cargan desde CDN, así que la app no es totalmente offline. La IA solo permanece local cuando se elige `Local`; en modo Cloud, la fuente y las instrucciones se procesan remotamente. La generación de imágenes no está integrada: Ghost Writer prepara y copia prompts. Los modelos de texto o visión de Ollama Cloud no se consideran generadores de imágenes sin soporte explícito de salida de imagen. Los datos de SOMA permanecen en el almacenamiento local del navegador; el servidor no los recibe ni los guarda.
+El Tech Radar consulta feeds RSS y puede recurrir a proxies públicos cuando el navegador bloquea el acceso directo. La pestaña Reddit, en cambio, consulta su feed Atom mediante un endpoint local de BlackBelt con caché de cinco minutos; las publicaciones se validan y se convierten a tarjetas con extracto, enlace y acción para cargarlas como fuente. Tailwind, iconos, fuentes y el renderizador Markdown también se cargan desde CDN, así que la app no es totalmente offline. La IA solo permanece local cuando se elige `Local`; en modo Cloud, la fuente y las instrucciones se procesan remotamente. La generación de imágenes no está integrada: Ghost Writer prepara y copia prompts. Los modelos de texto o visión de Ollama Cloud no se consideran generadores de imágenes sin soporte explícito de salida de imagen. Los datos de SOMA permanecen en el almacenamiento local del navegador; el servidor no los recibe ni los guarda.
 
 ### Clasificador de correo
 Requiere IMAP habilitado en Gmail, una contraseña de aplicación de Google y Ollama local con el modelo elegido descargado. Configura la cuenta de forma interactiva; la contraseña se guarda en el almacén seguro del sistema, no en el repositorio:
@@ -275,10 +309,14 @@ blackbelt/
 │   │   ├── executor.py        # Carga y ejecuta tools
 │   │   ├── config.py          # YAML + env + Ollama
 │   │   └── gatekeeper.py      # Seguridad y auditoría
+│   ├── knowledge/
+│   │   ├── meeting_prep.py    # Contexto local de reuniones, solo lectura
+│   │   └── semantic_search.py # Índice local Qdrant + FTS5 y embeddings Ollama
 │   ├── tools/
 │       ├── linux_mentor.py
 │       ├── windows_mentor.py
 │       ├── suggest.py
+│       ├── meetings.py        # Dossier CLI desde fuentes allowlisted
 │       ├── apps.py             # SOMA y Ghost Writer en localhost
 │       ├── graphics.py
 │       ├── obsidian.py
@@ -287,11 +325,14 @@ blackbelt/
 │       ├── chat.py
 │       ├── email.py           # (stub)
 │       ├── feeds.py           # (stub)
-│       └── search.py          # (stub)
+│       └── search.py          # Indexación incremental y búsqueda híbrida
 │   ├── webapps.py              # Servidor FastAPI y generación Ollama local
 │   └── data/
-│       └── recipes.yaml       # Catálogo local de suggest
-│       └── webapps/soma-sw.js # Caché PWA acotada al ámbito de SOMA
+│       ├── recipes.yaml       # Catálogo local de suggest
+│       └── webapps/
+│           ├── soma-sw.js     # Caché PWA acotada al ámbito de SOMA
+│           └── meetings/
+│               └── index.html # Asistente local de preparación
 ├── pyproject.toml
 ├── README.md
 └── .env                       # No versionado
@@ -339,8 +380,10 @@ El Gatekeeper es la capa de seguridad de BlackBelt. Intercepta acciones sensible
 ### Próximo
 - [ ] Flag global `--yes` para automatización
 - [ ] Cache de explicaciones (respuestas instantáneas en linux_mentor explain)
-- [ ] Lector de feeds RSS (feeds)
-- [ ] Búsqueda semántica con Qdrant (search)
+- [x] Lector de feeds RSS integrado en Ghost Writer (Tech Radar y Reddit)
+- [x] CLI de búsqueda híbrida local con Qdrant y BM25
+- [ ] Grafo de Wikilinks y PWA de búsqueda/descubrimientos
+- [x] Acceso directo de escritorio para Ghost Writer: iniciar o reutilizar el servidor local y abrir la PWA instalada sin dejar procesos duplicados
 
 ### Futuro
 - [ ] Integración MCP (Model Context Protocol)

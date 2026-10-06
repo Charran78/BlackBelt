@@ -26,3 +26,6 @@ plotext>=5.3
 # Aplicaciones web locales
 fastapi>=0.110
 uvicorn>=0.27
+
+# Búsqueda local híbrida
+qdrant-client>=1.9,<2

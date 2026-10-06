@@ -1,4 +1,4 @@
-"""Loopback-only web application host for SOMA and Ghost Writer."""
+"""Loopback-only web application host for local BlackBelt apps."""
 
 from __future__ import annotations
 
@@ -6,12 +6,18 @@ import importlib
 import logging
 import os
 import re
+import threading
+import time
 import unicodedata
-from datetime import date
+from datetime import date, datetime
+from html.parser import HTMLParser
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Literal
+from urllib.parse import urlsplit
+from xml.etree import ElementTree
 
-from fastapi import FastAPI, HTTPException, Request
+import requests
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,13 +25,51 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 import yaml
 
+from blackbelt.knowledge.meeting_prep import (
+    AmbiguousMeetingClientError,
+    MeetingClientNotFoundError,
+    MeetingClientSummary,
+    MeetingDossier,
+    MeetingPreparationError,
+    MeetingPreparationService,
+    client_context_markdown,
+)
+
 
 LOGGER = logging.getLogger(__name__)
 _MAX_REQUEST_BYTES = 64 * 1024
+_MAX_REDDIT_FEED_BYTES = 2 * 1024 * 1024
+_MAX_MEETING_SOURCES = 25
+_MAX_MEETING_SOURCE_CHARS = 12000
+_MAX_MEETING_DOSSIER_BYTES = 512 * 1024
+_MEETING_SAVE_LOCK = threading.Lock()
+_REDDIT_FEED_URL = (
+    "https://www.reddit.com/user/same-survey-7265/"
+    "m/tech_ia_y_salud_personal/.rss"
+)
+_REDDIT_FEED_CACHE_SECONDS = 300
+_REDDIT_FEED_CACHE: dict[str, Any] = {}
+_REDDIT_FEED_CACHE_LOCK = threading.Lock()
 _MAX_CONTEXT = 32768
 _MAX_LOCAL_PREDICT = 4096
 _MAX_CLOUD_PREDICT = 16384
 _MAX_RESPONSE_TEXT = 100000
+
+
+class RedditFeedItem(BaseModel):
+    id: str
+    title: str
+    subreddit: str
+    author: str
+    published: str
+    excerpt: str
+    link: str
+
+
+class RedditFeedResponse(BaseModel):
+    title: str
+    updated: str
+    items: list[RedditFeedItem]
 
 
 class GhostWriterRequest(BaseModel):
@@ -39,6 +83,10 @@ class GhostWriterRequest(BaseModel):
 class GhostWriterConfig(BaseModel):
     local_model: str
     cloud_model: str
+    author_name: str
+    author_handle: str
+    publication_name: str
+    default_tags: str
 
 
 class GhostWriterResponse(BaseModel):
@@ -61,6 +109,39 @@ class GhostWriterSaveResponse(BaseModel):
     relative_path: str
 
 
+class MeetingClientOption(BaseModel):
+    client_id: str
+    name: str
+    status: str
+    source: str
+
+
+class MeetingNoteSource(BaseModel):
+    path: str
+    title: str
+    content: str
+
+
+class MeetingPreparationResponse(BaseModel):
+    client: MeetingClientOption
+    client_context: str
+    active_projects: list[str]
+    previous_projects: list[str]
+    sources: list[MeetingNoteSource]
+    warnings: list[str]
+
+
+class MeetingPreparationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_id: str = Field(min_length=1, max_length=160)
+
+
+class MeetingSaveResponse(BaseModel):
+    filename: str
+    relative_path: str
+
+
 def create_app(
     default_page: str = "soma",
     *,
@@ -68,8 +149,10 @@ def create_app(
     assets_root: Path | None = None,
     obsidian_root: Path | None = None,
 ) -> FastAPI:
-    if default_page not in {"soma", "ghostwriter"}:
-        raise ValueError("La página inicial debe ser 'soma' o 'ghostwriter'.")
+    if default_page not in {"soma", "ghostwriter", "meetings"}:
+        raise ValueError(
+            "La página inicial debe ser 'soma', 'ghostwriter' o 'meetings'."
+        )
     app = FastAPI(
         title="BlackBelt Local Apps",
         docs_url=None,
@@ -96,6 +179,127 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/meetings", include_in_schema=False)
+    @app.get("/meetings/", include_in_schema=False)
+    async def meetings_page() -> FileResponse:
+        return _html_response(
+            _asset_path(app.state.assets_root, "meetings"),
+            no_cache=True,
+        )
+
+    @app.get("/meetings/manifest.webmanifest", include_in_schema=False)
+    async def meetings_manifest() -> FileResponse:
+        return _webapp_file(
+            "meetings",
+            "manifest.webmanifest",
+            "application/manifest+json",
+        )
+
+    @app.get("/meetings/icons/icon.svg", include_in_schema=False)
+    async def meetings_icon() -> FileResponse:
+        return _webapp_file("meetings", "icons/icon.svg", "image/svg+xml")
+
+    @app.get("/meetings/meetings-sw.js", include_in_schema=False)
+    async def meetings_service_worker() -> FileResponse:
+        return _webapp_file(
+            "meetings",
+            "meetings-sw.js",
+            "application/javascript",
+            no_cache=True,
+        )
+
+    @app.get(
+        "/api/meeting-prep/clients",
+        response_model=list[MeetingClientOption],
+    )
+    async def meeting_prep_clients(
+        request: Request,
+        response: Response,
+    ) -> list[MeetingClientOption]:
+        response.headers["Cache-Control"] = "no-store"
+        service = _meeting_preparation_service(request)
+        try:
+            clients = await run_in_threadpool(service.list_clients)
+        except MeetingPreparationError as exc:
+            LOGGER.warning("Meeting client listing failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo leer la carpeta de clientes de Obsidian.",
+            ) from exc
+        return [_meeting_client_option(client) for client in clients]
+
+    @app.get(
+        "/api/meeting-prep/prepare",
+        response_model=MeetingPreparationResponse,
+    )
+    async def meeting_prep(
+        request: Request,
+        response: Response,
+        client_id: str = Query(min_length=1, max_length=160),
+    ) -> MeetingPreparationResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _meeting_preparation_service(request)
+        try:
+            dossier = await run_in_threadpool(service.prepare, client_id)
+        except AmbiguousMeetingClientError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=str(exc),
+            ) from exc
+        except MeetingClientNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=str(exc),
+            ) from exc
+        except MeetingPreparationError as exc:
+            LOGGER.warning("Meeting dossier preparation failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo preparar el dossier desde la bóveda.",
+            ) from exc
+        return _meeting_preparation_response(dossier, service)
+
+    @app.post(
+        "/api/meeting-prep/save",
+        response_model=MeetingSaveResponse,
+        status_code=201,
+    )
+    async def save_meeting_prep(
+        payload: MeetingPreparationRequest,
+        request: Request,
+        response: Response,
+    ) -> MeetingSaveResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _meeting_preparation_service(request)
+        try:
+            dossier = await run_in_threadpool(service.prepare, payload.client_id)
+        except AmbiguousMeetingClientError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except MeetingClientNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except MeetingPreparationError as exc:
+            LOGGER.warning("Meeting dossier preparation failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo preparar el dossier desde la bóveda.",
+            ) from exc
+
+        rendered = _meeting_preparation_response(dossier, service)
+        markdown = _meeting_dossier_markdown(rendered)
+        vault_root = request.app.state.obsidian_root or Path(
+            os.getenv("OBSIDIAN_VAULT", str(Path.home() / "Obsidian"))
+        ).expanduser()
+        filename, relative_path = await run_in_threadpool(
+            _save_meeting_dossier,
+            vault_root,
+            rendered.client.client_id,
+            markdown,
+        )
+        return MeetingSaveResponse(
+            filename=filename,
+            relative_path=relative_path,
+        )
 
     @app.get("/soma", include_in_schema=False)
     @app.get("/soma/", include_in_schema=False)
@@ -156,9 +360,11 @@ def create_app(
     )
     async def ghostwriter_destination(
         request: Request,
+        platform: Literal["linkedin", "substack"] = "linkedin",
     ) -> GhostWriterDestination:
         _, relative_directory = _resolve_obsidian_destination(
             request.app.state.obsidian_root,
+            platform=platform,
         )
         return GhostWriterDestination(
             directory=relative_directory.as_posix(),
@@ -175,6 +381,7 @@ def create_app(
     ) -> GhostWriterSaveResponse:
         destination, relative_directory = _resolve_obsidian_destination(
             request.app.state.obsidian_root,
+            platform=payload.platform,
         )
         filename = _create_obsidian_note(
             destination,
@@ -194,7 +401,26 @@ def create_app(
         return GhostWriterConfig(
             local_model=_ollama_model("local"),
             cloud_model=_ollama_model("cloud"),
+            author_name=os.getenv("GHOSTWRITER_AUTHOR_NAME", "").strip(),
+            author_handle=os.getenv("GHOSTWRITER_AUTHOR_HANDLE", "").strip(),
+            publication_name=os.getenv(
+                "GHOSTWRITER_PUBLICATION_NAME",
+                "Bits To The Bone",
+            ).strip(),
+            default_tags=os.getenv(
+                "GHOSTWRITER_DEFAULT_TAGS",
+                "#newsletter #tech #sistemas #ia",
+            ).strip(),
         )
+
+    @app.get(
+        "/api/ghostwriter/reddit-feed",
+        response_model=RedditFeedResponse,
+    )
+    async def ghostwriter_reddit_feed(
+        refresh: bool = False,
+    ) -> RedditFeedResponse:
+        return await run_in_threadpool(_reddit_feed, refresh)
 
     @app.post("/api/ghostwriter/generate", response_model=GhostWriterResponse)
     async def generate_ghostwriter_text(
@@ -288,13 +514,504 @@ def _assets_root() -> Path:
     return Path(__file__).parent / "data" / "webapps"
 
 
-def _html_response(path: Path) -> FileResponse:
+def _meeting_preparation_service(request: Request) -> MeetingPreparationService:
+    configured_root = request.app.state.obsidian_root or Path(
+        os.getenv("OBSIDIAN_VAULT", str(Path.home() / "Obsidian"))
+    ).expanduser()
+    return MeetingPreparationService(Path(configured_root))
+
+
+def _meeting_client_option(
+    client: MeetingClientSummary,
+) -> MeetingClientOption:
+    return MeetingClientOption(
+        client_id=client.client_id,
+        name=client.name,
+        status=client.status,
+        source=client.source,
+    )
+
+
+def _meeting_preparation_response(
+    dossier: MeetingDossier,
+    service: MeetingPreparationService,
+) -> MeetingPreparationResponse:
+    client = dossier.client
+    client_summary = service.summarize_client(client)
+    warnings = list(dossier.warnings)
+    sources = dossier.related_notes
+    if len(sources) > _MAX_MEETING_SOURCES:
+        warnings.append(
+            f"Se muestran {_MAX_MEETING_SOURCES} de {len(sources)} notas relacionadas."
+        )
+    rendered_sources: list[MeetingNoteSource] = []
+    for note in sources[:_MAX_MEETING_SOURCES]:
+        content, was_truncated = _truncate_meeting_text(
+            client_context_markdown(note)
+        )
+        if was_truncated:
+            warnings.append(
+                f"Se truncó el contenido mostrado de "
+                f"{service.relative_path(note.path)}."
+            )
+        rendered_sources.append(
+            MeetingNoteSource(
+                path=service.relative_path(note.path),
+                title=note.path.stem,
+                content=content,
+            )
+        )
+
+    client_context, was_truncated = _truncate_meeting_text(
+        client_context_markdown(client)
+    )
+    if was_truncated:
+        warnings.append("Se truncó el contexto de la ficha del cliente.")
+    return MeetingPreparationResponse(
+        client=_meeting_client_option(client_summary),
+        client_context=client_context,
+        active_projects=_meeting_metadata_values(
+            client.metadata.get("proyectos_activos")
+        ),
+        previous_projects=_meeting_metadata_values(
+            client.metadata.get("proyectos_previos")
+        ),
+        sources=rendered_sources,
+        warnings=warnings,
+    )
+
+
+def _metadata_string(value: Any) -> str:
+    if isinstance(value, str | int | float):
+        return str(value).strip()
+    return ""
+
+
+def _meeting_metadata_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [
+            item.strip()
+            for item in value
+            if isinstance(item, str) and item.strip()
+        ]
+    return []
+
+
+def _meeting_dossier_markdown(
+    dossier: MeetingPreparationResponse,
+) -> str:
+    generated_at = datetime.now().astimezone().isoformat(timespec="minutes")
+    lines = [
+        f"# Dossier de reunión: {dossier.client.name}",
+        "",
+        f"- Cliente: [[{dossier.client.source.removesuffix('.md')}]]",
+        f"- Clave de cliente: `{dossier.client.client_id}`",
+        f"- Generado: {generated_at}",
+        f"- Estado: {dossier.client.status or 'sin estado'}",
+        "",
+        "## Proyectos activos",
+        "",
+    ]
+    lines.extend(f"- {project}" for project in dossier.active_projects)
+    if not dossier.active_projects:
+        lines.append("- Sin proyectos activos registrados.")
+    lines.extend(("", "## Proyectos anteriores", ""))
+    lines.extend(f"- {project}" for project in dossier.previous_projects)
+    if not dossier.previous_projects:
+        lines.append("- Sin proyectos anteriores registrados.")
+    lines.extend(("", "## Contexto del cliente", "", dossier.client_context, ""))
+    if dossier.warnings:
+        lines.extend(("## Avisos", ""))
+        lines.extend(f"- {warning}" for warning in dossier.warnings)
+        lines.append("")
+    lines.extend(("## Notas relacionadas", ""))
+    if not dossier.sources:
+        lines.append("No se encontraron notas relacionadas explícitamente.")
+    for source in dossier.sources:
+        source_link = source.path.removesuffix(".md")
+        lines.extend(
+            (
+                f"### {source.title}",
+                "",
+                f"Fuente: [[{source_link}]]",
+                "",
+                source.content.strip(),
+                "",
+            )
+        )
+    lines.extend(
+        (
+            "---",
+            "",
+            "Dossier generado localmente por BlackBelt. "
+            "Verifica las notas fuente antes de compartir o actuar.",
+            "",
+        )
+    )
+    return "\n".join(lines)
+
+
+def _save_meeting_dossier(
+    configured_root: Path,
+    client_id: str,
+    content: str,
+) -> tuple[str, str]:
+    encoded_content = content.encode("utf-8")
+    if len(encoded_content) > _MAX_MEETING_DOSSIER_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="El dossier supera el tamaño máximo permitido para guardarlo.",
+        )
+    try:
+        vault_root = configured_root.expanduser().resolve(strict=True)
+        if not vault_root.is_dir():
+            raise OSError("La bóveda configurada no es una carpeta.")
+        destination = vault_root / "020 - DOSSIERES"
+        if destination.is_symlink():
+            raise HTTPException(
+                status_code=503,
+                detail="La carpeta 020 - DOSSIERES no puede ser un enlace simbólico.",
+            )
+        destination.mkdir(exist_ok=True)
+        resolved_destination = destination.resolve(strict=True)
+        resolved_destination.relative_to(vault_root)
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        LOGGER.warning(
+            "Meeting dossier folder is unavailable (%s).",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="No se pudo acceder a 020 - DOSSIERES dentro de la bóveda.",
+        ) from exc
+
+    if (
+        not resolved_destination.is_dir()
+        or not os.access(resolved_destination, os.W_OK)
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="La carpeta 020 - DOSSIERES no está disponible para escritura.",
+        )
+
+    client_key = _meeting_filename_component(client_id)
+    filename_stem = f"{client_key}_{date.today().isoformat()}"
+    with _MEETING_SAVE_LOCK:
+        for suffix in range(1000):
+            numbered_suffix = f"_{suffix:02d}" if suffix else ""
+            filename = f"{filename_stem}{numbered_suffix}.md"
+            note_path = resolved_destination / filename
+            created = False
+            phase = "create"
+            try:
+                with note_path.open(
+                    "x",
+                    encoding="utf-8",
+                    newline="\n",
+                ) as note:
+                    created = True
+                    phase = "write"
+                    note.write(content)
+                    if not content.endswith("\n"):
+                        note.write("\n")
+                    phase = "flush"
+                    note.flush()
+                    phase = "fsync"
+                    os.fsync(note.fileno())
+                    phase = "close"
+                relative_path = note_path.relative_to(vault_root).as_posix()
+                return filename, relative_path
+            except FileExistsError:
+                continue
+            except OSError as exc:
+                if created:
+                    try:
+                        note_path.unlink(missing_ok=True)
+                    except OSError as cleanup_error:
+                        LOGGER.error(
+                            "Could not remove incomplete meeting dossier %s "
+                            "(%s: %s).",
+                            filename,
+                            type(cleanup_error).__name__,
+                            cleanup_error,
+                        )
+                LOGGER.error(
+                    "Could not save meeting dossier %s during %s "
+                    "(%s, errno=%s, winerror=%s, error=%s).",
+                    filename,
+                    phase,
+                    type(exc).__name__,
+                    exc.errno,
+                    getattr(exc, "winerror", None),
+                    exc,
+                )
+                error_code = getattr(exc, "winerror", None) or exc.errno
+                error_code_label = (
+                    str(error_code) if error_code is not None else "desconocido"
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "No se pudo guardar el dossier durante "
+                        f"{phase} (código {error_code_label})."
+                    ),
+                ) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Se agotaron los nombres disponibles para el dossier de hoy.",
+    )
+
+
+def _meeting_filename_component(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_value = normalized.encode("ascii", errors="ignore").decode("ascii")
+    component = re.sub(r"[^A-Za-z0-9_-]+", "-", ascii_value).strip("-_")
+    return component[:80] or "cliente"
+
+
+def _truncate_meeting_text(content: str) -> tuple[str, bool]:
+    if len(content) <= _MAX_MEETING_SOURCE_CHARS:
+        return content, False
+    marker = "\n\n[Contenido truncado para mantener la respuesta ligera.]"
+    return content[:_MAX_MEETING_SOURCE_CHARS - len(marker)] + marker, True
+
+
+class _FeedTextParser(HTMLParser):
+    """Extract a plain-text preview from Reddit's HTML Atom content."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.all_parts: list[str] = []
+        self.preview_parts: list[str] = []
+        self._ignored_depth = 0
+        self._preview_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        del attrs
+        if tag in {"script", "style"}:
+            self._ignored_depth += 1
+        elif tag in {"p", "li", "blockquote", "h1", "h2", "h3"}:
+            self._preview_depth += 1
+        if tag in {"br", "div", "p", "li", "tr"} and not self._ignored_depth:
+            self.all_parts.append(" ")
+            if self._preview_depth:
+                self.preview_parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"} and self._ignored_depth:
+            self._ignored_depth -= 1
+        elif tag in {"p", "li", "blockquote", "h1", "h2", "h3"}:
+            self._preview_depth = max(0, self._preview_depth - 1)
+        if tag in {"div", "p", "li", "tr"} and not self._ignored_depth:
+            self.all_parts.append(" ")
+            if self._preview_depth:
+                self.preview_parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._ignored_depth:
+            self.all_parts.append(data)
+            if self._preview_depth:
+                self.preview_parts.append(data)
+
+
+def _reddit_feed(force_refresh: bool = False) -> RedditFeedResponse:
+    now = time.monotonic()
+    with _REDDIT_FEED_CACHE_LOCK:
+        cached_until = _REDDIT_FEED_CACHE.get("expires_at", 0.0)
+        cached_response = _REDDIT_FEED_CACHE.get("response")
+        if (
+            cached_response is not None
+            and now < cached_until
+            and not force_refresh
+        ):
+            return cached_response
+
+        try:
+            with requests.get(
+                _REDDIT_FEED_URL,
+                headers={
+                    "Accept": "application/atom+xml, application/rss+xml",
+                    "User-Agent": "BlackBelt/0.1 (local Reddit feed reader)",
+                },
+                timeout=(3.05, 12),
+                allow_redirects=False,
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                content_chunks: list[bytes] = []
+                content_size = 0
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    content_size += len(chunk)
+                    if content_size > _MAX_REDDIT_FEED_BYTES:
+                        raise ValueError("El feed supera el tamaño permitido.")
+                    content_chunks.append(chunk)
+                content = b"".join(content_chunks)
+            if b"\x00" in content:
+                raise ValueError("El feed debe usar una codificación XML segura.")
+            if b"<!DOCTYPE" in content.upper() or b"<!ENTITY" in content.upper():
+                raise ValueError("El feed contiene declaraciones XML no permitidas.")
+            parsed_response = _parse_reddit_feed(content)
+        except (
+            requests.RequestException,
+            ElementTree.ParseError,
+            ValueError,
+        ) as exc:
+            if cached_response is not None:
+                LOGGER.warning(
+                    "Reddit feed refresh failed; serving cached results (%s).",
+                    type(exc).__name__,
+                )
+                return cached_response
+            LOGGER.warning(
+                "Reddit feed request failed (%s).",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo actualizar el feed de Reddit. Reinténtalo en unos minutos.",
+            ) from exc
+
+        _REDDIT_FEED_CACHE.update(
+            response=parsed_response,
+            expires_at=time.monotonic() + _REDDIT_FEED_CACHE_SECONDS,
+        )
+        return parsed_response
+
+
+def _parse_reddit_feed(content: bytes) -> RedditFeedResponse:
+    root = ElementTree.fromstring(content)
+    title = _xml_child_text(root, "title") or "Reddit"
+    updated = _xml_child_text(root, "updated")
+    items: list[RedditFeedItem] = []
+
+    for entry in _xml_children(root, "entry")[:40]:
+        item_title = _xml_child_text(entry, "title")
+        link = next(
+            (
+                child.attrib.get("href", "").strip()
+                for child in _xml_children(entry, "link")
+                if child.attrib.get("rel", "alternate") == "alternate"
+            ),
+            "",
+        )
+        if not _is_reddit_link(link) or not item_title:
+            continue
+
+        category = next(iter(_xml_children(entry, "category")), None)
+        author = _xml_child_text(
+            next(iter(_xml_children(entry, "author")), None),
+            "name",
+        )
+        content_node = next(
+            (
+                child
+                for child in list(entry)
+                if _xml_local_name(child.tag) in {"content", "summary"}
+            ),
+            None,
+        )
+        raw_content = (
+            "".join(content_node.itertext()) if content_node is not None else ""
+        )
+        parser = _FeedTextParser()
+        parser.feed(raw_content)
+        preview_text = (
+            parser.preview_parts
+            if parser.preview_parts
+            else parser.all_parts if "<" not in raw_content else []
+        )
+        excerpt = re.sub(r"\s+", " ", "".join(preview_text)).strip()
+        if not excerpt:
+            excerpt = (
+                f"Enlace compartido en r/{category.attrib.get('term', 'reddit')}. "
+                "Abre la publicación para consultar el artículo."
+                if category is not None
+                else "Abre la publicación para consultar el contenido."
+            )
+        published = (
+            _xml_child_text(entry, "published")
+            or _xml_child_text(entry, "updated")
+        )
+        item_id = _xml_child_text(entry, "id") or link
+        items.append(
+            RedditFeedItem(
+                id=item_id[:256],
+                title=item_title[:500],
+                subreddit=(
+                    category.attrib.get("term", "reddit")
+                    if category is not None
+                    else "reddit"
+                )[:100],
+                author=author[:100],
+                published=published[:64],
+                excerpt=excerpt[:500],
+                link=link,
+            )
+        )
+
+    return RedditFeedResponse(title=title[:200], updated=updated[:64], items=items)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xml_children(
+    parent: ElementTree.Element | None,
+    name: str,
+) -> list[ElementTree.Element]:
+    if parent is None:
+        return []
+    return [
+        child for child in list(parent)
+        if _xml_local_name(child.tag) == name
+    ]
+
+
+def _xml_child_text(
+    parent: ElementTree.Element | None,
+    name: str,
+) -> str:
+    child = next(iter(_xml_children(parent, name)), None)
+    return "".join(child.itertext()).strip() if child is not None else ""
+
+
+def _is_reddit_link(link: str) -> bool:
+    parsed = urlsplit(link)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname in {"reddit.com", "www.reddit.com"}
+        and not parsed.username
+        and not parsed.password
+    )
+
+
+def _html_response(
+    path: Path,
+    *,
+    no_cache: bool = False,
+) -> FileResponse:
     if not path.is_file():
         raise HTTPException(
             status_code=404,
             detail="No se encontraron los archivos locales de la aplicación.",
         )
-    return FileResponse(path, media_type="text/html; charset=utf-8")
+    headers = {"Cache-Control": "no-cache"} if no_cache else {}
+    return FileResponse(
+        path,
+        media_type="text/html; charset=utf-8",
+        headers=headers,
+    )
 
 
 def _webapp_file(
@@ -321,12 +1038,29 @@ def _webapp_file(
 
 def _resolve_obsidian_destination(
     configured_root: Path | None,
+    *,
+    platform: Literal["linkedin", "substack"] | None = None,
 ) -> tuple[Path, Path]:
     root_path = configured_root or Path(
         os.getenv("OBSIDIAN_VAULT", str(Path.home() / "Obsidian"))
     ).expanduser()
-    raw_relative_directory = os.getenv(
-        "GHOSTWRITER_OBSIDIAN_SUBDIR",
+    platform_setting = (
+        f"GHOSTWRITER_{platform.upper()}_SUBDIR"
+        if platform
+        else ""
+    )
+    platform_directory = (
+        os.getenv(platform_setting, "").strip()
+        if platform_setting
+        else ""
+    )
+    directory_setting = (
+        platform_setting
+        if platform_directory
+        else "GHOSTWRITER_OBSIDIAN_SUBDIR"
+    )
+    raw_relative_directory = platform_directory or os.getenv(
+        directory_setting,
         "013 - PUBLICACIONES",
     )
     relative_directory = Path(raw_relative_directory)
@@ -346,7 +1080,7 @@ def _resolve_obsidian_destination(
     ):
         raise HTTPException(
             status_code=500,
-            detail="GHOSTWRITER_OBSIDIAN_SUBDIR debe ser una ruta relativa segura.",
+            detail=f"{directory_setting} debe ser una ruta relativa segura.",
         )
 
     try:
@@ -442,9 +1176,15 @@ def _obsidian_title_slug(content: str) -> str:
 
 
 def _asset_path(root: Path, application: str) -> Path:
-    if application == "soma":
-        return root / "soma" / "somaguard.html"
-    return root / "ghostwriter" / "ghostwriter_ai_studio.html"
+    asset_paths = {
+        "soma": root / "soma" / "somaguard.html",
+        "ghostwriter": root / "ghostwriter" / "ghostwriter_ai_studio.html",
+        "meetings": root / "meetings" / "index.html",
+    }
+    try:
+        return asset_paths[application]
+    except KeyError as exc:
+        raise ValueError("Aplicación web no soportada.") from exc
 
 
 def _ollama_model(backend: Literal["local", "cloud"]) -> str:

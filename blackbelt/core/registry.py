@@ -13,7 +13,7 @@ TOOLS = {
     },
     "apps": {
         "module": "blackbelt.tools.apps",
-        "description": "Abre SOMA y Ghost Writer en el navegador local",
+        "description": "Abre y gestiona SOMA y Ghost Writer en local",
     },
     "graphics": {
         "module": "blackbelt.tools.graphics",
@@ -33,7 +33,11 @@ TOOLS = {
     },
     "search": {
         "module": "blackbelt.tools.search",
-        "description": "Busqueda semantica con Qdrant",
+        "description": "Busqueda hibrida local: Qdrant y BM25",
+    },
+    "meetings": {
+        "module": "blackbelt.tools.meetings",
+        "description": "Prepara reuniones desde notas permitidas de Obsidian",
     },
     "chat": {
         "module": "blackbelt.tools.chat",
@@ -46,10 +50,6 @@ TOOLS = {
     "exec": {
         "module": "blackbelt.tools.exec",
         "description": "Ejecuta comandos de shell (con Gatekeeper)",
-    },
-    "obsidian": {
-        "module": "blackbelt.tools.obsidian",
-        "description": "Lectura/escritura en boveda Obsidian",
     },
     "git": {
         "module": "blackbelt.tools.git",

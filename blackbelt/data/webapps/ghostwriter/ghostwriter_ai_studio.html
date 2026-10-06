@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ghost Writer - Estudio de escritura</title>
+  <title>GhostWriter AI Studio - Obsidian & Newsletter Pipeline</title>
   <meta name="theme-color" content="#312e81">
   <link rel="manifest" href="/ghostwriter/manifest.webmanifest">
   <link rel="icon" href="/ghostwriter/icons/icon.svg" type="image/svg+xml">
@@ -35,9 +35,9 @@
       </div>
       <div>
         <h1 class="text-base font-bold tracking-tight text-white flex items-center gap-2">
-          Ghost Writer <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-mono">Ollama</span>
+          GhostWriter AI <span class="text-xs px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 font-mono">v2.5 Obsidian</span>
         </h1>
-        <p class="text-xs text-slate-400">Estudio de escritura para LinkedIn y Substack</p>
+        <p class="text-xs text-slate-400">Automatización de contenidos para LinkedIn, Substack & Vault</p>
       </div>
     </div>
 
@@ -50,6 +50,10 @@
       <button onclick="switchTab('radar')" id="tab-radar" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 text-slate-400 hover:text-white transition">
         <i class="fa-solid fa-compass"></i>
         <span>Tech Radar (Discover)</span>
+      </button>
+      <button onclick="switchTab('reddit')" id="tab-reddit" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 text-slate-400 hover:text-white transition">
+        <i class="fa-brands fa-reddit-alien text-orange-400"></i>
+        <span>Reddit Feed</span>
       </button>
       <button onclick="switchTab('nanobanana')" id="tab-nanobanana" class="tab-btn px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 text-slate-400 hover:text-white transition">
         <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i>
@@ -148,7 +152,7 @@
             <div>
               <label class="block text-[11px] text-slate-400 mb-1">Tono / Identidad</label>
               <select id="select-tone" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-slate-200 focus:border-purple-500 focus:outline-none">
-                <option value="balanced">Analítico y pragmático</option>
+                <option value="bits_to_bone">Bits to the Bone (Analítico & Pragmático)</option>
                 <option value="tech_optimist">Divulgador Tech Optimista</option>
                 <option value="architect">Arquitecto de Software Senior</option>
                 <option value="provocative">Reflexivo & Cuestionador</option>
@@ -233,10 +237,15 @@
           </div>
         </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-1">
+        <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2 pt-1">
           <button onclick="copyOutputToClipboard()" class="p-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-800 text-xs font-medium text-slate-200 flex items-center justify-center space-x-1.5 transition">
             <i class="fa-regular fa-copy text-indigo-400"></i>
             <span>Copiar Post</span>
+          </button>
+
+          <button id="btn-publish-platform" onclick="openPublicationComposer()" class="p-2.5 rounded-xl bg-sky-700 hover:bg-sky-600 border border-sky-500/40 text-xs font-semibold text-white flex items-center justify-center space-x-1.5 transition" title="Copia el borrador y abre el compositor de LinkedIn">
+            <i id="publish-platform-icon" class="fa-brands fa-linkedin"></i>
+            <span id="publish-platform-label">Publicar en LinkedIn</span>
           </button>
 
           <button onclick="generateNanoBananaImage()" id="btn-nano-image" class="p-2.5 rounded-xl bg-gradient-to-r from-amber-500/20 to-purple-500/20 hover:from-amber-500/30 hover:to-purple-500/30 border border-amber-500/30 text-xs font-medium text-amber-200 flex items-center justify-center space-x-1.5 transition">
@@ -312,6 +321,34 @@
 
     </section>
 
+    <!-- REDDIT RSS FEED -->
+    <section id="view-reddit" class="view-panel hidden flex-1 flex flex-col h-full w-full bg-slate-950 p-6 overflow-y-auto">
+      <div class="max-w-6xl mx-auto w-full space-y-6">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+          <div>
+            <h2 class="text-xl font-bold text-white flex items-center gap-2">
+              <i class="fa-brands fa-reddit-alien text-orange-400"></i>
+              Reddit: IA, tecnología y salud personal
+            </h2>
+            <p class="text-xs text-slate-400">
+              Feed curado de Reddit. Revisa el extracto, abre el hilo o úsalo como fuente para escribir.
+            </p>
+          </div>
+          <button onclick="fetchRedditFeed(true)" class="px-3 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold flex items-center gap-1.5 transition shadow-md">
+            <i class="fa-solid fa-arrows-rotate"></i>
+            <span>Actualizar Reddit</span>
+          </button>
+        </div>
+
+        <div id="reddit-feed-status" class="text-xs text-slate-500"></div>
+        <div id="reddit-news-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div class="col-span-full py-12 text-center text-xs text-slate-400">
+            Cargando publicaciones de Reddit...
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- TAB 3: VISUAL PROMPT PREPARATION -->
     <section id="view-nanobanana" class="view-panel hidden flex-1 flex flex-col h-full w-full bg-slate-950 p-6 overflow-y-auto">
       <div class="max-w-4xl mx-auto w-full space-y-6">
@@ -366,19 +403,19 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
-            <div class="text-xs font-bold text-purple-400 uppercase">Publicaciones cortas</div>
+            <div class="text-xs font-bold text-purple-400 uppercase">Directorio POSTS</div>
             <div class="code-font text-xs text-slate-300 bg-slate-950 p-2.5 rounded-lg border border-slate-800 break-all">
-              Destino configurable dentro de tu bóveda
+              <span id="destination-linkedin">018 - NEWSLETTERS/POSTS</span>
             </div>
-            <p class="text-[11px] text-slate-500">LinkedIn y notas breves.</p>
+            <p class="text-[11px] text-slate-500">Destinado a publicaciones cortas de LinkedIn y notas rápidas.</p>
           </div>
 
           <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-2">
-            <div class="text-xs font-bold text-indigo-400 uppercase">Newsletters</div>
+            <div class="text-xs font-bold text-indigo-400 uppercase">Directorio BITS TO THE BONE</div>
             <div class="code-font text-xs text-slate-300 bg-slate-950 p-2.5 rounded-lg border border-slate-800 break-all">
-              Destino configurable dentro de tu bóveda
+              <span id="destination-substack">018 - NEWSLETTERS/BITS TO THE BONE</span>
             </div>
-            <p class="text-[11px] text-slate-500">Substack y artículos extensos.</p>
+            <p class="text-[11px] text-slate-500">Destinado a newsletters largas y ediciones de Substack.</p>
           </div>
         </div>
 
@@ -445,24 +482,30 @@
     const state = {
       platform: 'linkedin',
       viewMode: 'edit',
+      authorHandle: '',
+      publicationName: 'Bits To The Bone',
       currentRawMarkdown: '',
       currentTitle: 'Nuevo Post',
       lastPromptForImage: '',
+      redditItems: [],
       keywords: ["programación", "sistemas", "Linux", "Microsoft", "Apple", "Android", "iOS", "desarrollo", "inteligencia artificial", "gaming", "Windows", "ChatGPT", "Gemini", "DeepSeek"],
       history: JSON.parse(localStorage.getItem('ghostwriter_history') || '[]')
     };
 
     // Initialization
     window.onload = function() {
+      loadWriterPreferences();
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('/ghostwriter/ghostwriter-sw.js')
           .catch(error => console.error('Ghost Writer PWA setup failed:', error));
       }
       loadObsidianDestination();
+      loadConfiguredDestinations();
       loadAiConfiguration();
       updateAiBackendNotice();
       renderKeywordsChips();
       fetchTechRadarFeeds();
+      fetchRedditFeed();
       renderHistoryTable();
     };
 
@@ -506,6 +549,31 @@
 
         adaptBtnLbl.innerText = 'Adaptar LinkedIn';
       }
+      updatePublishButton(plat);
+      loadObsidianDestination();
+    }
+
+    function updatePublishButton(platform) {
+      const platformDetails = {
+        linkedin: {
+          label: 'Publicar en LinkedIn',
+          icon: 'fa-brands fa-linkedin',
+          title: 'Copia el borrador y abre el compositor de LinkedIn'
+        },
+        substack: {
+          label: 'Publicar en Substack',
+          icon: 'fa-solid fa-bookmark',
+          title: 'Copia el borrador y abre el editor de Substack'
+        }
+      }[platform];
+      if (!platformDetails) return;
+
+      document.getElementById('publish-platform-label').textContent =
+        platformDetails.label;
+      document.getElementById('publish-platform-icon').className =
+        platformDetails.icon;
+      document.getElementById('btn-publish-platform').title =
+        platformDetails.title;
     }
 
     async function loadAiConfiguration() {
@@ -519,9 +587,39 @@
         const backendSelect = document.getElementById('select-ai-backend');
         backendSelect.options[0].textContent = `Local · ${data.local_model}`;
         backendSelect.options[1].textContent = `Ollama Cloud · ${data.cloud_model}`;
+        state.authorHandle = data.author_handle || '';
+        state.publicationName = data.publication_name || 'Bits To The Bone';
+        if (localStorage.getItem('ghostwriter_author_name') === null) {
+          document.getElementById('cfg-author-name').value = data.author_name;
+        }
+        if (localStorage.getItem('ghostwriter_default_tags') === null) {
+          document.getElementById('cfg-default-tags').value = data.default_tags;
+        }
       } catch (error) {
         console.warn('Ghost Writer could not load AI configuration:', error);
       }
+    }
+
+    function loadWriterPreferences() {
+      const authorName = localStorage.getItem('ghostwriter_author_name');
+      const defaultTags = localStorage.getItem('ghostwriter_default_tags');
+      if (authorName !== null) {
+        document.getElementById('cfg-author-name').value = authorName;
+      }
+      if (defaultTags !== null) {
+        document.getElementById('cfg-default-tags').value = defaultTags;
+      }
+    }
+
+    function saveWriterPreferences() {
+      localStorage.setItem(
+        'ghostwriter_author_name',
+        document.getElementById('cfg-author-name').value.trim()
+      );
+      localStorage.setItem(
+        'ghostwriter_default_tags',
+        document.getElementById('cfg-default-tags').value.trim()
+      );
     }
 
     function updateAiBackendNotice() {
@@ -567,13 +665,16 @@
 
       showLoader(true);
 
-      const signatureName = authorName.trim();
-      const signatureInstruction = signatureName
-        ? `Incluye al final la firma **${signatureName}**.`
-        : 'No incluyas una firma personal ni inventes una identidad.';
-      const systemInstruction = `Eres un asistente de escritura personalizable para crear publicaciones y newsletters técnicas.
+      const publicationName = state.publicationName;
+      const authorIdentity = authorName.trim()
+        ? `${authorName.trim()}${state.authorHandle ? ` (${state.authorHandle})` : ''}`
+        : publicationName;
+      const authorSignature = authorName.trim()
+        ? `**${authorName.trim()}** | ${publicationName}`
+        : publicationName;
+      const systemInstruction = `Eres el ghost-writer personal de ${authorIdentity}, autor de la newsletter "${publicationName}" y de posts técnicos en LinkedIn.
 
-Escribe de forma clara, directa y natural. Adapta el nivel técnico al público y no inventes experiencias personales del autor.
+No eres un copywriter. No eres un "content architect". Eres ese colega técnico que escribe como habla: directo, sin humo, con café en la mano y muchas horas de trastear a las espaldas.
 
 ═══════════════════════════════════════
 🎙️ VOZ Y TONO (obligatorio)
@@ -581,9 +682,9 @@ Escribe de forma clara, directa y natural. Adapta el nivel técnico al público 
 - Español de España, tuteo, coloquial. Nada de neutro latino ni de "ustedes".
 - Frases cortas. Una idea por línea. Si una frase tiene tres comas, pártela.
 - Anti-humo. Anti-corporativo. Anti-"en el vertiginoso mundo de".
-- Usa humor seco solo cuando encaje con el tema y sin atribuir vivencias personales al autor.
-- Cercano y respetuoso. Trata al lector como a una persona, no como a una audiencia abstracta.
-- Usa humor solo cuando encaje con la fuente y no lo presentes como una vivencia del autor.
+- Autocrítico y con humor seco: "mi CPU decidió pedir auxilio", "fracasé estrepitosamente y me fui a hacer un café".
+- Cercano, sin ser baboso. Trata al lector como a un colega, no como a una audiencia.
+- Cuando dudes: escribe como si le contaras la noticia a alguien en la barra de un bar, pero con criterio técnico.
 
 ═══════════════════════════════════════
 🧱 ESTRUCTURA OBLIGATORIA
@@ -599,7 +700,7 @@ Escribe de forma clara, directa y natural. Adapta el nivel técnico al público 
 
 4. BLOQUE "PERO OJO, LA LETRA PEQUEÑA" ⚠️ (bullets con 🔸).
    Matices, escepticismo, lo que no cuadra, lo que falta por verificar.
-   Este bloque aporta matices y nunca debe omitirse.
+   Este bloque es TU MARCA. Nunca lo omitas.
 
 5. CONCLUSIÓN PERSONAL 🎯 (2-4 líneas).
    Tu opinión con criterio. No un resumen. Una postura.
@@ -607,8 +708,8 @@ Escribe de forma clara, directa y natural. Adapta el nivel técnico al público 
 6. CIERRE:
    - Pregunta directa al lector ("¿Tú qué crees?", "¿Habías oído hablar de esto?").
    - "Te leo 👇"
-   - Una despedida breve si encaja.
-   - ${signatureInstruction}
+   - "Un abrazo y buen código,"
+   - "${authorSignature}"
 
 ═══════════════════════════════════════
 🎨 RECURSOS DE ESTILO
@@ -616,6 +717,13 @@ Escribe de forma clara, directa y natural. Adapta el nivel técnico al público 
 - Separadores: usa ━━━━━━━━━━━━━━ entre bloques grandes. Ayuda a leer en móvil.
 - Emojis como ANCLAS temáticas, no decorativos: ☕ 🤖 🛠️ ⚠️ 🎯 ✅ 🔹 🔸 👇
 - Negritas para conceptos clave, no para frases enteras.
+- Frases que ya son tuyas y puedes usar si encajan:
+  · "Lo que te flote el barco"
+  · "PC desfasadete"
+  · "trastear"
+  · "sin humo"
+  · "soplagaiteces" (solo si el contexto lo permite)
+  · "Un abrazo y buen código"
 - Cuando cites precios, velocidades o claims de una empresa, márcalos como lo que son: "promete", "asegura", "según la empresa". Nunca los des por hechos.
 
 ═══════════════════════════════════════
@@ -637,7 +745,7 @@ Escribe de forma clara, directa y natural. Adapta el nivel técnico al público 
 📱 FORMATO SEGÚN PLATAFORMA (${state.platform.toUpperCase()})
 ═══════════════════════════════════════
 - LINKEDIN: Post de 250-450 palabras. Saltos de línea generosos. Bloques separados. Emojis ancla. Cierre con pregunta + firma. Nada de markdown de encabezados (##) porque LinkedIn no los renderiza: usa negritas y separadores.
-- SUBSTACK: Newsletter de 800-1500 palabras. Sí usa encabezados ## y subsecciones. Introducción desarrollada, sin inventar anécdotas personales. Incluye un bloque de "Reflexión final" al cierre.
+- SUBSTACK: Newsletter de 800-1500 palabras. Sí usa encabezados ## y subsecciones. Introducción más desarrollada (puede ser anécdota larga). Incluye un bloque de "Reflexión final" al cierre. Firma más elaborada con enlaces a LinkedIn, GitHub y Substack.
 
 ═══════════════════════════════════════
 📎 FRONTMATTER OBSIDIAN (obligatorio)
@@ -648,7 +756,7 @@ title: "TITULO_AQUI"
 date: "${new Date().toISOString().split('T')[0]}"
 platform: "${state.platform}"
 path: "${targetPath}"
-author: "${signatureName}"
+author: "${authorName}"
 tags: [${defaultTags.replace(/#/g, '').split(' ').join(', ')}]
 status: borrador
 ---
@@ -656,14 +764,14 @@ status: borrador
 Después del frontmatter, el contenido. Sin comentarios meta. Sin "aquí tienes tu post". Sin disculpas.
 
 ═══════════════════════════════════════
-📚 ORIENTACIÓN DE ESTILO
+📚 EJEMPLOS DE REFERENCIA (tu voz real)
 ═══════════════════════════════════════
 Usa las reglas de voz y estructura como orientación. No reutilices literalmente frases de este prompt ni inventes anécdotas personales.
 
 ═══════════════════════════════════════
 🎛️ TONO SELECCIONADO PARA ESTA GENERACIÓN: ${toneStyle}
 ═══════════════════════════════════════
-- Si es "balanced": aplica las pautas anteriores de forma equilibrada.
+- Si es "bits_to_bone": aplica TODO lo anterior sin filtro. Es tu voz por defecto.
 - Si es "tech_optimist": mantén la estructura pero sube el entusiasmo. Menos letra pequeña, más "esto es la leche".
 - Si es "architect": más técnico, más seco, menos anécdota personal. Cero emojis decorativos.
 - Si es "provocative": hook más incisivo, conclusión más opinada, letra pequeña más larga.
@@ -678,6 +786,23 @@ ${sourceInput}
 Formato solicitado: ${formatType}
 Plataforma destino: ${state.platform}`;
 
+      if (systemInstruction.length > 16000) {
+        showLoader(false);
+        showToast(
+          'Las instrucciones personalizadas superan el límite de 16.000 caracteres. Acorta la firma o las etiquetas.',
+          'error'
+        );
+        return;
+      }
+      if (userQuery.length > 32000) {
+        showLoader(false);
+        showToast(
+          `La fuente es demasiado larga (${userQuery.length.toLocaleString('es-ES')} caracteres). El límite es 32.000; recórtala antes de generar.`,
+          'error'
+        );
+        return;
+      }
+
       try {
         const response = await fetch('/api/ghostwriter/generate', {
           method: 'POST',
@@ -688,9 +813,20 @@ Plataforma destino: ${state.platform}`;
             user_query: userQuery
           })
         });
-        const data = await response.json();
+        const responseText = await response.text();
+        let data;
+        try {
+          data = responseText ? JSON.parse(responseText) : {};
+        } catch (parseError) {
+          throw new Error(
+            `El servidor respondió con un formato inesperado (HTTP ${response.status}).`
+          );
+        }
         if (!response.ok) {
-          throw new Error(data.detail || 'No se pudo generar el borrador local.');
+          throw new Error(
+            formatApiError(data.detail, response.status) ||
+            `No se pudo generar el borrador (HTTP ${response.status}).`
+          );
         }
         const generatedText = data.text;
 
@@ -703,11 +839,31 @@ Plataforma destino: ${state.platform}`;
 
         showToast('¡Borrador generado con éxito!', 'success');
       } catch (err) {
-        console.error("Ollama local error:", err);
+        console.error(`Ghost Writer ${backend} generation error:`, err);
         showToast(err.message || 'Error al conectar con Ollama local.', 'error');
       } finally {
         showLoader(false);
       }
+    }
+
+    function formatApiError(detail, status) {
+      if (typeof detail === 'string') return detail;
+      if (Array.isArray(detail)) {
+        const messages = detail.map(error => {
+          if (!error || typeof error !== 'object') return String(error);
+          const location = Array.isArray(error.loc)
+            ? error.loc.filter(part => part !== 'body').join('.')
+            : '';
+          return [location, error.msg].filter(Boolean).join(': ');
+        }).filter(Boolean);
+        return messages.length
+          ? `Solicitud rechazada (HTTP ${status}): ${messages.join(' · ')}`
+          : `Solicitud rechazada (HTTP ${status}).`;
+      }
+      if (detail && typeof detail === 'object') {
+        return `Error del servidor (HTTP ${status}): ${JSON.stringify(detail)}`;
+      }
+      return '';
     }
 
     // Prepare a reusable illustration prompt without calling a cloud API.
@@ -780,14 +936,84 @@ Plataforma destino: ${state.platform}`;
       const text = document.getElementById('output-text-editor').value;
       if (!text) return;
 
+      const copied = copyTextToClipboard(text);
+      showToast(
+        copied ? 'Copiado al portapapeles.' : 'No se pudo acceder al portapapeles.',
+        copied ? 'success' : 'error'
+      );
+    }
+
+    function copyTextToClipboard(text) {
       const textarea = document.createElement('textarea');
       textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
       document.body.appendChild(textarea);
       textarea.select();
-      document.execCommand('copy');
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (error) {
+        console.warn('Clipboard fallback failed:', error);
+      }
       document.body.removeChild(textarea);
+      return copied;
+    }
 
-      showToast('Copiado al portapapeles.', 'success');
+    async function openPublicationComposer() {
+      const text = document.getElementById('output-text-editor').value;
+      const platformDetails = {
+        linkedin: {
+          name: 'LinkedIn',
+          url: 'https://www.linkedin.com/sharing/compose'
+        },
+        substack: {
+          name: 'Substack',
+          url: 'https://pedromencias.substack.com/publish/post/'
+        }
+      }[state.platform];
+      if (!text.trim()) {
+        showToast('No hay contenido para copiar y publicar.', 'warning');
+        return;
+      }
+      if (!platformDetails) {
+        showToast('La plataforma de publicación seleccionada no es válida.', 'error');
+        return;
+      }
+
+      const composerWindow = window.open(
+        platformDetails.url,
+        '_blank'
+      );
+      if (composerWindow) composerWindow.opener = null;
+      let copied = false;
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } else {
+          copied = copyTextToClipboard(text);
+        }
+      } catch (error) {
+        copied = copyTextToClipboard(text);
+      }
+
+      if (!composerWindow) {
+        showToast(
+          copied
+            ? `Contenido copiado. El navegador bloqueó la pestaña; permite ventanas emergentes para abrir ${platformDetails.name}.`
+            : `El navegador bloqueó ${platformDetails.name} y no permitió copiar el contenido.`,
+          'warning'
+        );
+        return;
+      }
+      showToast(
+        copied
+          ? `Contenido copiado. Pégalo en el editor de ${platformDetails.name}.`
+          : `${platformDetails.name} se abrió, pero no se pudo copiar el contenido.`,
+        copied ? 'success' : 'warning'
+      );
     }
 
     function downloadObsidianFile() {
@@ -816,7 +1042,9 @@ Plataforma destino: ${state.platform}`;
       const saveButton = document.getElementById('btn-save-to-vault');
       const status = document.getElementById('obsidian-destination-status');
       try {
-        const response = await fetch('/api/ghostwriter/destination');
+        const response = await fetch(
+          `/api/ghostwriter/destination?platform=${encodeURIComponent(state.platform)}`
+        );
         const data = await response.json();
         if (!response.ok) {
           throw new Error(data.detail || 'La bóveda local no está disponible.');
@@ -837,6 +1065,26 @@ Plataforma destino: ${state.platform}`;
         saveButton.disabled = true;
         status.textContent = error.message || 'No se pudo localizar la bóveda configurada.';
       }
+    }
+
+    async function loadConfiguredDestinations() {
+      const destinations = [
+        ['linkedin', 'destination-linkedin'],
+        ['substack', 'destination-substack']
+      ];
+      await Promise.all(destinations.map(async ([platform, elementId]) => {
+        try {
+          const response = await fetch(
+            `/api/ghostwriter/destination?platform=${platform}`
+          );
+          const data = await response.json();
+          if (response.ok) {
+            document.getElementById(elementId).textContent = data.directory;
+          }
+        } catch (error) {
+          console.warn(`Could not load ${platform} destination:`, error);
+        }
+      }));
     }
 
     async function saveToObsidianVault() {
@@ -1137,6 +1385,102 @@ Plataforma destino: ${state.platform}`;
       showToast('Enlace de ejemplo cargado', 'info');
     }
 
+    async function fetchRedditFeed(forceRefresh = false) {
+      const grid = document.getElementById('reddit-news-grid');
+      const status = document.getElementById('reddit-feed-status');
+      grid.innerHTML = `
+        <div class="col-span-full py-12 flex flex-col items-center justify-center space-y-3">
+          <div class="w-8 h-8 border-4 border-orange-500/20 border-t-orange-500 rounded-full animate-spin"></div>
+          <p class="text-xs text-orange-300 animate-pulse">Consultando el feed curado de Reddit...</p>
+        </div>`;
+      try {
+        const response = await fetch(
+          `/api/ghostwriter/reddit-feed${forceRefresh ? '?refresh=true' : ''}`,
+          { signal: AbortSignal.timeout(18000) }
+        );
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || 'No se pudo cargar el feed de Reddit.');
+        }
+        state.redditItems = data.items || [];
+        status.textContent = data.updated
+          ? `Feed: ${data.title} · Actualizado ${formatDate(data.updated)} · ${state.redditItems.length} publicaciones`
+          : `Feed: ${data.title} · ${state.redditItems.length} publicaciones`;
+        renderRedditFeed(state.redditItems);
+      } catch (error) {
+        status.textContent = 'Reddit no está disponible ahora mismo.';
+        grid.innerHTML = `
+          <div class="col-span-full py-12 text-center text-xs text-slate-400 space-y-3">
+            <i class="fa-solid fa-triangle-exclamation text-amber-400 text-2xl"></i>
+            <p>${escapeHtml(error.message || 'No se pudo cargar el feed.')}</p>
+            <button onclick="fetchRedditFeed(true)" class="px-3 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-500 text-white font-semibold text-xs">
+              Reintentar
+            </button>
+          </div>`;
+      }
+    }
+
+    function renderRedditFeed(items) {
+      const grid = document.getElementById('reddit-news-grid');
+      if (!items.length) {
+        grid.innerHTML = `
+          <div class="col-span-full py-12 text-center text-xs text-slate-400">
+            El feed no contiene publicaciones disponibles.
+          </div>`;
+        return;
+      }
+      grid.innerHTML = items.map((item, index) => `
+        <article class="bg-slate-900 border border-slate-800 hover:border-orange-500/50 rounded-xl p-4 flex flex-col justify-between space-y-3 transition">
+          <div class="space-y-2">
+            <div class="flex items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span class="px-2 py-0.5 rounded bg-orange-500/10 text-orange-300 font-bold">r/${escapeHtml(item.subreddit)}</span>
+              <span>${escapeHtml(formatDate(item.published))}</span>
+            </div>
+            <h3 class="text-sm font-bold text-slate-200 hover:text-orange-300 transition line-clamp-3">
+              <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>
+            </h3>
+            <p class="text-xs text-slate-400 line-clamp-4">${escapeHtml(item.excerpt || 'Sin vista previa disponible.')}</p>
+            <p class="text-[10px] text-slate-500">Publicado por ${escapeHtml(item.author || 'usuario de Reddit')}</p>
+          </div>
+          <div class="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
+            <a href="${escapeHtml(item.link)}" target="_blank" rel="noopener noreferrer" class="text-[11px] text-orange-400 hover:text-orange-300 flex items-center gap-1 font-semibold">
+              <i class="fa-solid fa-up-right-from-square"></i> Abrir hilo
+            </a>
+            <button type="button" data-reddit-index="${index}" class="reddit-use-source px-2.5 py-1 rounded-lg bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 text-xs font-semibold flex items-center gap-1 transition">
+              <i class="fa-solid fa-pen"></i> Usar como fuente
+            </button>
+          </div>
+        </article>
+      `).join('');
+      grid.querySelectorAll('.reddit-use-source').forEach(button => {
+        button.addEventListener('click', () => {
+          const item = state.redditItems[Number(button.dataset.redditIndex)];
+          if (item) useRedditAsSource(item);
+        });
+      });
+    }
+
+    function useRedditAsSource(item) {
+      const source = [
+        `Publicación de Reddit: ${item.title}`,
+        item.excerpt ? `Vista previa: ${item.excerpt}` : '',
+        `Enlace: ${item.link}`
+      ].filter(Boolean).join('\n\n');
+      switchTab('writer');
+      document.getElementById('input-source-text').value = source;
+      showToast('Publicación de Reddit cargada como fuente', 'info');
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      })[character]);
+    }
+
     function saveToHistory(title, platform, path) {
       const entry = {
         date: new Date().toLocaleDateString(),
@@ -1189,7 +1533,10 @@ Plataforma destino: ${state.platform}`;
     }
 
     function openConfigModal() { document.getElementById('config-modal').classList.remove('hidden'); }
-    function closeConfigModal() { document.getElementById('config-modal').classList.add('hidden'); }
+    function closeConfigModal() {
+      saveWriterPreferences();
+      document.getElementById('config-modal').classList.add('hidden');
+    }
 
     async function copyImagePrompt() {
       if (!state.lastPromptForImage) return;

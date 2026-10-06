@@ -321,8 +321,8 @@ class RecipeCatalogTests(unittest.TestCase):
         self.assertEqual(suggest._normalize_windows_path("h:"), "H:\\")
         self.assertEqual(suggest._normalize_windows_path("h:/"), "H:\\")
         self.assertEqual(
-            suggest._normalize_windows_path(r"h:\users\testuser"),
-            r"h:\users\testuser",
+            suggest._normalize_windows_path(r"h:\users\xpite"),
+            r"h:\users\xpite",
         )
 
     def test_template_rendering_preserves_shell_script_blocks(self) -> None:

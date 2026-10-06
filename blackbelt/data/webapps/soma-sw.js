@@ -1,4 +1,4 @@
-const CACHE_NAME = "somaguard-shell-v2";
+const CACHE_NAME = "somaguard-shell-v1";
 const APP_SHELL = "/soma/";
 
 self.addEventListener("install", (event) => {

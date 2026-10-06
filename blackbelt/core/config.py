@@ -45,6 +45,17 @@ OLLAMA_NUM_THREAD = int(_cpu_threads) if _cpu_threads else None
 OBSIDIAN_VAULT = Path(
     os.getenv("OBSIDIAN_VAULT", str(Path.home() / "Obsidian"))
 ).expanduser()
+SEARCH_EMBEDDING_MODEL = os.getenv(
+    "SEARCH_EMBEDDING_MODEL",
+    "nomic-embed-text",
+).strip()
+SEARCH_MIN_COSINE_SCORE = float(os.getenv("SEARCH_MIN_COSINE_SCORE", "0.65"))
+SEARCH_INDEX_DIR = Path(
+    os.getenv(
+        "BLACKBELT_SEARCH_DIR",
+        str(Path.home() / ".blackbelt" / "search"),
+    )
+).expanduser()
 
 
 def ollama_options() -> dict:
@@ -56,7 +67,8 @@ def ollama_options() -> dict:
     if OLLAMA_NUM_THREAD is not None:
         opts["num_thread"] = OLLAMA_NUM_THREAD
     return opts
-    
+
+
 def vault_path() -> Path:
     """Devuelve la ruta de la bóveda Obsidian, validando que exista."""
     if not OBSIDIAN_VAULT.exists():

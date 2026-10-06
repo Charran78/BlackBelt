@@ -1,4 +1,5 @@
 import time
+import shutil
 from collections import deque
 
 import psutil
@@ -19,7 +20,7 @@ HISTORY_SIZE = 60
 REFRESH_SECONDS = 1.0
 
 
-def run(args: list[str] | str | None = None) -> None:
+def run(args=None):
     """Snapshot o monitor en vivo. Uso: blackbelt run graphics [snapshot|monitor]"""
     args = executor.args_to_str(args)
     parts = args.split()
@@ -39,7 +40,7 @@ def run(args: list[str] | str | None = None) -> None:
 # SNAPSHOT (sin cambios — usa psutil y Rich, no plotext)
 # ============================================================
 
-def snapshot() -> None:
+def snapshot():
     table = Table(title="Estado del sistema")
     table.add_column("Recurso", style="cyan")
     table.add_column("Valor", style="magenta")
@@ -61,7 +62,7 @@ def snapshot() -> None:
                 "Swap",
                 f"{swap.used / 1024**3:.2f} / {swap.total / 1024**3:.2f} GB  ({swap.percent:.1f}%)",
             )
-    except (OSError, psutil.Error, NotImplementedError):
+    except Exception:
         pass
 
     for part in psutil.disk_partitions(all=False):
@@ -86,7 +87,7 @@ def snapshot() -> None:
             if entries:
                 t = entries[0]
                 table.add_row(f"Temp {name}", f"{t.current:.0f}°C")
-    except (OSError, psutil.Error, NotImplementedError):
+    except Exception:
         pass
 
     console.print(table)
@@ -96,7 +97,7 @@ def snapshot() -> None:
 # MONITOR EN VIVO — API plotext 6.1.0
 # ============================================================
 
-def monitor() -> None:
+def monitor():
     """Bucle en vivo con gráficas de CPU y RAM. Salir con Ctrl+C."""
     if not HAS_PLOTEXT:
         console.print("[red]plotext no está instalado.[/]")

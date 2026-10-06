@@ -1,14 +1,14 @@
-const CACHE_NAME = "ghostwriter-shell-v10";
-const APP_SHELL = "/ghostwriter/";
-const APP_ASSETS = [
-  APP_SHELL,
-  "/ghostwriter/manifest.webmanifest",
-  "/ghostwriter/icons/icon.svg",
+const CACHE_NAME = "meetings-shell-v6";
+const APP_SHELL = [
+  "/meetings/",
+  "/meetings/manifest.webmanifest",
+  "/meetings/icons/icon.svg",
 ];
+const CACHEABLE_PATHS = new Set(APP_SHELL);
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL))
   );
   self.skipWaiting();
 });
@@ -18,7 +18,7 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => key.startsWith("ghostwriter-") && key !== CACHE_NAME)
+          .filter((key) => key.startsWith("meetings-shell-") && key !== CACHE_NAME)
           .map((key) => caches.delete(key))
       )
     )
@@ -32,34 +32,27 @@ self.addEventListener("fetch", (event) => {
   if (
     event.request.method !== "GET" ||
     requestUrl.origin !== appUrl.origin ||
-    !requestUrl.pathname.startsWith(appUrl.pathname) ||
-    requestUrl.search
+    requestUrl.search ||
+    !CACHEABLE_PATHS.has(requestUrl.pathname)
   ) {
     return;
   }
 
   event.respondWith(
     caches.open(CACHE_NAME).then(async (cache) => {
-      const cached = await cache.match(event.request);
-
-      let response;
       try {
-        response = await fetch(event.request);
+        const response = await fetch(event.request);
+        if (response.ok) {
+          await cache.put(event.request, response.clone());
+        }
+        return response;
       } catch (error) {
+        const cached = await cache.match(event.request);
         if (cached) {
           return cached;
         }
         throw error;
       }
-
-      if (response.ok) {
-        try {
-          await cache.put(event.request, response.clone());
-        } catch (error) {
-          console.warn("Ghost Writer could not update its offline cache.", error);
-        }
-      }
-      return response;
     })
   );
 });

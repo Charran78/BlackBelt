@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <link rel="manifest" href="/meetings/manifest.webmanifest">
+  <link rel="icon" href="/meetings/icons/icon.svg" type="image/svg+xml">
+  <title>Preparación de reuniones | BlackBelt</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: #0b1120;
+      color: #e5e7eb;
+      font-synthesis: none;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    header {
+      border-bottom: 1px solid #273449;
+      background: #111827;
+      padding: 1rem clamp(1rem, 5vw, 4rem);
+    }
+    .header-content {
+      width: min(100%, 960px);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    .header-content h1 { margin: 0; font-size: 1.25rem; }
+    header p { color: #9ca3af; margin: 0.25rem 0 0; }
+    #install-button { flex: 0 0 auto; }
+    main {
+      width: min(100% - 2rem, 960px);
+      margin: 2rem auto 5rem;
+    }
+    .intro, .panel, .source, .notice {
+      border: 1px solid #273449;
+      border-radius: 14px;
+      background: #111827;
+    }
+    .intro { padding: clamp(1.25rem, 4vw, 2rem); margin-bottom: 1rem; }
+    .intro h2 { margin: 0 0 0.5rem; font-size: clamp(1.35rem, 4vw, 2rem); }
+    .intro p, .muted { color: #a8b3c7; line-height: 1.6; }
+    .panel { padding: 1.25rem; margin: 1rem 0; }
+    label { display: block; font-weight: 650; margin-bottom: 0.5rem; }
+    .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    select, button {
+      min-height: 44px;
+      border: 1px solid #475569;
+      border-radius: 9px;
+      background: #0b1120;
+      color: inherit;
+      padding: 0.65rem 0.85rem;
+      font: inherit;
+    }
+    select { flex: 1 1 260px; }
+    button { cursor: pointer; background: #4338ca; border-color: #6366f1; }
+    button:hover:not(:disabled) { background: #4f46e5; }
+    button:disabled, select:disabled { cursor: not-allowed; opacity: 0.6; }
+    :focus-visible { outline: 3px solid #a5b4fc; outline-offset: 2px; }
+    #status { min-height: 1.5rem; margin: 0.85rem 0 0; color: #cbd5e1; }
+    #status[data-kind="error"] { color: #fca5a5; }
+    #status[data-kind="success"] { color: #86efac; }
+    #dossier[hidden] { display: none; }
+    h2, h3 { color: #f8fafc; }
+    h3 { margin-top: 0; }
+    .meta { color: #cbd5e1; }
+    .context {
+      margin: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: inherit;
+      line-height: 1.65;
+    }
+    .project-list { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0; list-style: none; }
+    .project-list li {
+      border: 1px solid #334155;
+      border-radius: 999px;
+      color: #c7d2fe;
+      padding: 0.35rem 0.7rem;
+    }
+    .source { margin: 0.75rem 0; overflow: hidden; }
+    .source summary { cursor: pointer; padding: 0.9rem 1rem; color: #c7d2fe; }
+    .source summary span { color: #94a3b8; font-size: 0.85rem; }
+    .source > .context { border-top: 1px solid #273449; padding: 1rem; }
+    .markdown-table-wrap { margin: 0.75rem 0; max-width: 100%; overflow-x: auto; }
+    .markdown-table { width: 100%; border-collapse: collapse; font-size: 0.92em; }
+    .markdown-table th, .markdown-table td {
+      border: 1px solid #64748b;
+      padding: 0.4rem 0.55rem;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    .markdown-table th { background: #1e293b; color: #f8fafc; }
+    .notice { padding: 0.8rem 1rem; color: #fde68a; margin: 0.75rem 0; }
+    .notice[hidden] { display: none; }
+    .dossier-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    #save-button { background: #047857; border-color: #10b981; }
+    #save-button:hover:not(:disabled) { background: #059669; }
+    #print-button { background: #334155; border-color: #64748b; }
+    @media (max-width: 520px) {
+      main { width: min(100% - 1rem, 960px); margin-top: 1rem; }
+      .controls { flex-direction: column; }
+      button { width: 100%; }
+      .dossier-actions { flex-direction: column; }
+      .header-content { align-items: flex-start; }
+      .header-content h1 { font-size: 1rem; }
+      #install-button { width: auto; font-size: 0.85rem; }
+    }
+    @media print {
+      :root { color-scheme: light; background: #fff; color: #111; }
+      body { min-height: 0; background: #fff; color: #111; font-size: 10.5pt; }
+      header { padding: 0 0 0.75rem; border-bottom: 1px solid #777; background: #fff; }
+      header p, .muted, .meta { color: #333; }
+      header button, .intro, #client-panel, .dossier-actions, #status,
+      #install-button, .notice { display: none !important; }
+      main { width: 100%; margin: 0; }
+      .panel, .source { margin: 0.35rem 0; padding: 0.4rem; border: 1px solid #aaa; border-radius: 0; background: #fff; }
+      h1, h2, h3, .source summary { color: #111; }
+      h1 { font-size: 15pt; }
+      h2 { font-size: 13pt; }
+      h3 { font-size: 11pt; }
+      .project-list li { border-color: #888; color: #111; }
+      .source { overflow: visible; break-inside: auto; page-break-inside: auto; }
+      .source summary { padding: 0.4rem 0; font-weight: 700; }
+      .source summary::marker { content: ""; }
+      .source summary span { color: #333; }
+      .source[open] > .context { display: block; }
+      .source > .context { border-top: 1px solid #aaa; padding: 0.35rem 0; }
+      .context { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 9pt; }
+      .markdown-table-wrap { margin: 0.4rem 0; overflow: visible; break-inside: auto; }
+      .markdown-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 8pt; }
+      .markdown-table thead { display: table-header-group; }
+      .markdown-table tr { break-inside: avoid; page-break-inside: avoid; }
+      .markdown-table th, .markdown-table td {
+        border: 1px solid #777;
+        padding: 3px 4px;
+        color: #111;
+        background: #fff;
+        overflow-wrap: anywhere;
+      }
+      .markdown-table th { font-weight: 700; }
+      #dossier h2, #dossier h3 { break-after: avoid; page-break-after: avoid; }
+      #dossier[hidden] { display: none !important; }
+      @page { size: auto; margin: 10mm; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <div>
+        <h1>BlackBelt <span class="muted">/ Reuniones</span></h1>
+        <p>Preparación local a partir de tus notas de Obsidian.</p>
+      </div>
+      <button id="install-button" type="button" aria-label="Instalar BlackBelt Reuniones">
+        Instalar app
+      </button>
+    </div>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <h2 id="page-title">Preparar una reunión</h2>
+      <p>
+        Reúne ficha, proyectos, tareas y reuniones relacionadas. El asistente
+        solo lee las carpetas autorizadas; la carpeta 006 - CREDENCIALES queda
+        excluida. Las propuestas se muestran completas, incluidos sus importes.
+        No modifica notas ni envía datos a IA.
+      </p>
+    </section>
+
+    <section id="client-panel" class="panel no-print" aria-label="Seleccionar cliente">
+      <label for="client-select">Cliente</label>
+      <div class="controls">
+        <select id="client-select" disabled>
+          <option value="">Cargando clientes...</option>
+        </select>
+        <button id="prepare-button" type="button" disabled>Preparar dossier</button>
+      </div>
+      <p id="status" role="status" aria-live="polite">Conectando con la bóveda local...</p>
+    </section>
+
+    <section id="dossier" hidden aria-live="polite">
+      <div class="panel dossier-actions no-print">
+        <button id="save-button" type="button" disabled>Guardar dossier como .md</button>
+        <button id="print-button" type="button" disabled>Imprimir dossier</button>
+      </div>
+      <div class="panel">
+        <h2 id="client-name"></h2>
+        <p id="client-meta" class="meta"></p>
+        <p class="muted">Ficha: <span id="client-source"></span></p>
+      </div>
+      <div id="warnings"></div>
+      <div class="panel">
+        <h3>Proyectos activos</h3>
+        <ul id="active-projects" class="project-list"></ul>
+        <p id="no-active-projects" class="muted" hidden>Sin proyectos activos registrados.</p>
+        <h3>Proyectos anteriores</h3>
+        <ul id="previous-projects" class="project-list"></ul>
+        <p id="no-previous-projects" class="muted" hidden>Sin proyectos anteriores registrados.</p>
+      </div>
+      <article class="panel">
+        <h3>Contexto del cliente</h3>
+        <pre id="client-context" class="context"></pre>
+      </article>
+      <section class="panel">
+        <h3>Notas relacionadas</h3>
+        <div id="sources"></div>
+        <p id="no-sources" class="muted" hidden>No hay notas vinculadas explícitamente.</p>
+      </section>
+      <p class="muted">Comprueba las fuentes antes de usar esta información en la reunión.</p>
+    </section>
+  </main>
+  <script>
+    "use strict";
+
+    const clientSelect = document.getElementById("client-select");
+    const prepareButton = document.getElementById("prepare-button");
+    const statusLine = document.getElementById("status");
+    const dossier = document.getElementById("dossier");
+    const installButton = document.getElementById("install-button");
+    const saveButton = document.getElementById("save-button");
+    const printButton = document.getElementById("print-button");
+    let installPrompt = null;
+
+    function isStandalone() {
+      return window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true;
+    }
+
+    if (isStandalone()) installButton.hidden = true;
+
+    window.addEventListener("beforeinstallprompt", (event) => {
+      event.preventDefault();
+      installPrompt = event;
+      installButton.hidden = false;
+    });
+
+    window.addEventListener("appinstalled", () => {
+      installPrompt = null;
+      installButton.hidden = true;
+      setStatus("BlackBelt Reuniones quedó instalada.", "success");
+    });
+
+    installButton.addEventListener("click", async () => {
+      if (!installPrompt) {
+        setStatus(
+          "Para instalarla, abre el menú del navegador y elige " +
+          "“Instalar BlackBelt Reuniones” o “Añadir a pantalla de inicio”."
+        );
+        return;
+      }
+      installButton.disabled = true;
+      try {
+        await installPrompt.prompt();
+        const { outcome } = await installPrompt.userChoice;
+        installPrompt = null;
+        if (outcome === "accepted") {
+          setStatus(
+            "Instalación aceptada. Ya puedes abrirla desde tus aplicaciones.",
+            "success"
+          );
+        } else {
+          setStatus("Puedes instalarla más tarde desde el menú del navegador.");
+        }
+      } catch {
+        installPrompt = null;
+        setStatus(
+          "No se pudo abrir la instalación. Usa el menú del navegador para instalarla.",
+          "error"
+        );
+      } finally {
+        installButton.disabled = false;
+      }
+    });
+
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/meetings/meetings-sw.js")
+        .catch(() => {
+          setStatus(
+            "La app funciona, pero no se pudo activar el modo instalable. " +
+            "Comprueba que abres esta página desde localhost."
+          );
+        });
+    }
+
+    function setStatus(message, kind = "") {
+      statusLine.textContent = message;
+      statusLine.dataset.kind = kind;
+    }
+
+    function showError(error) {
+      const message = typeof error?.detail === "string"
+        ? error.detail
+        : "No se pudo completar la solicitud. Comprueba el servidor local.";
+      setStatus(message, "error");
+    }
+
+    async function loadClients() {
+      try {
+        const response = await fetch("/api/meeting-prep/clients", {
+          cache: "no-store",
+          headers: { "Accept": "application/json" }
+        });
+        const result = await response.json();
+        if (!response.ok) throw result;
+
+        clientSelect.replaceChildren();
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Selecciona un cliente";
+        clientSelect.append(placeholder);
+
+        for (const client of result) {
+          const option = document.createElement("option");
+          option.value = client.client_id;
+          option.textContent = [
+            client.name,
+            client.client_id,
+            client.status
+          ].filter(Boolean).join(" · ");
+          clientSelect.append(option);
+        }
+
+        clientSelect.disabled = result.length === 0;
+        prepareButton.disabled = true;
+        if (result.length === 0) {
+          setStatus("No hay fichas de cliente disponibles en 005 - CLIENTES.");
+        } else {
+          setStatus("Elige un cliente para reunir su contexto.");
+        }
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    async function saveDossier() {
+      if (!clientSelect.value || dossier.hidden) return;
+      const clientId = clientSelect.value;
+      saveButton.disabled = true;
+      clientSelect.disabled = true;
+      setStatus("Guardando una copia actualizada del dossier...");
+      try {
+        const response = await fetch("/api/meeting-prep/save", {
+          method: "POST",
+          cache: "no-store",
+          headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          body: JSON.stringify({ client_id: clientSelect.value })
+        });
+        const result = await response.json();
+        if (!response.ok) throw result;
+        setStatus(`Dossier guardado: ${result.relative_path}`, "success");
+      } catch (error) {
+        showError(error);
+      } finally {
+        clientSelect.disabled = false;
+        saveButton.disabled = dossier.hidden || clientSelect.value !== clientId;
+      }
+    }
+
+    function printDossier() {
+      if (!dossier.hidden) window.print();
+    }
+
+    let printDisclosureStates = [];
+    window.addEventListener("beforeprint", () => {
+      printDisclosureStates = Array.from(dossier.querySelectorAll("details"), (item) => {
+        const wasOpen = item.open;
+        item.open = true;
+        return { item, wasOpen };
+      });
+    });
+    window.addEventListener("afterprint", () => {
+      for (const { item, wasOpen } of printDisclosureStates) {
+        item.open = wasOpen;
+      }
+      printDisclosureStates = [];
+    });
+
+    function renderList(elementId, emptyId, values) {
+      const list = document.getElementById(elementId);
+      list.replaceChildren();
+      for (const value of values) {
+        const item = document.createElement("li");
+        item.textContent = value;
+        list.append(item);
+      }
+      document.getElementById(emptyId).hidden = values.length > 0;
+    }
+
+    function isMarkdownTableRow(line) {
+      const trimmed = line.trim();
+      return trimmed.startsWith("|") && trimmed.endsWith("|");
+    }
+
+    function isMarkdownTableDivider(line) {
+      return isMarkdownTableRow(line) &&
+        /^\|?[\s:|-]+\|?$/.test(line.trim()) &&
+        line.includes("-");
+    }
+
+    function markdownTableCells(line) {
+      return line.trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.trim().replace(/\\\|/g, "|"));
+    }
+
+    function appendMarkdownTable(container, headerLine, dividerLine, bodyLines) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "markdown-table-wrap";
+      const table = document.createElement("table");
+      table.className = "markdown-table";
+      const headerCells = markdownTableCells(headerLine);
+      const dividerCells = markdownTableCells(dividerLine);
+      const head = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+
+      headerCells.forEach((value, index) => {
+        const cell = document.createElement("th");
+        cell.textContent = value;
+        if (dividerCells[index]?.startsWith(":") && !dividerCells[index]?.endsWith(":")) {
+          cell.style.textAlign = "left";
+        } else if (dividerCells[index]?.endsWith(":") && !dividerCells[index]?.startsWith(":")) {
+          cell.style.textAlign = "right";
+        } else if (dividerCells[index]?.startsWith(":") && dividerCells[index]?.endsWith(":")) {
+          cell.style.textAlign = "center";
+        }
+        headerRow.append(cell);
+      });
+      head.append(headerRow);
+
+      const body = document.createElement("tbody");
+      for (const line of bodyLines) {
+        const row = document.createElement("tr");
+        markdownTableCells(line).forEach((value, index) => {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          if (dividerCells[index]?.startsWith(":") && !dividerCells[index]?.endsWith(":")) {
+            cell.style.textAlign = "left";
+          } else if (dividerCells[index]?.endsWith(":") && !dividerCells[index]?.startsWith(":")) {
+            cell.style.textAlign = "right";
+          } else if (dividerCells[index]?.startsWith(":") && dividerCells[index]?.endsWith(":")) {
+            cell.style.textAlign = "center";
+          }
+          row.append(cell);
+        });
+        body.append(row);
+      }
+      table.append(head, body);
+      wrapper.append(table);
+      container.append(wrapper);
+    }
+
+    function renderMarkdownWithTables(container, markdown) {
+      const lines = markdown.split("\n");
+      let plainLines = [];
+      const flushPlainText = () => {
+        if (plainLines.length) {
+          container.append(document.createTextNode(plainLines.join("\n")));
+          plainLines = [];
+        }
+      };
+
+      for (let index = 0; index < lines.length; index += 1) {
+        if (
+          isMarkdownTableRow(lines[index]) &&
+          isMarkdownTableDivider(lines[index + 1] || "")
+        ) {
+          flushPlainText();
+          const headerLine = lines[index];
+          const dividerLine = lines[index + 1];
+          const bodyLines = [];
+          index += 2;
+          while (index < lines.length && isMarkdownTableRow(lines[index])) {
+            bodyLines.push(lines[index]);
+            index += 1;
+          }
+          index -= 1;
+          appendMarkdownTable(container, headerLine, dividerLine, bodyLines);
+          continue;
+        }
+        plainLines.push(lines[index]);
+      }
+      flushPlainText();
+    }
+
+    function renderDossier(result) {
+      document.getElementById("client-name").textContent = result.client.name;
+      document.getElementById("client-meta").textContent =
+        result.client.status ? `Estado: ${result.client.status}` : "";
+      document.getElementById("client-source").textContent = result.client.source;
+      document.getElementById("client-context").textContent = result.client_context;
+      renderList("active-projects", "no-active-projects", result.active_projects);
+      renderList("previous-projects", "no-previous-projects", result.previous_projects);
+
+      const sourceContainer = document.getElementById("sources");
+      sourceContainer.replaceChildren();
+      for (const source of result.sources) {
+        const details = document.createElement("details");
+        details.className = "source";
+        const summary = document.createElement("summary");
+        summary.textContent = source.title + " ";
+        const path = document.createElement("span");
+        path.textContent = source.path;
+        summary.append(path);
+        const content = document.createElement("div");
+        content.className = "context";
+        renderMarkdownWithTables(content, source.content);
+        details.append(summary, content);
+        sourceContainer.append(details);
+      }
+      document.getElementById("no-sources").hidden = result.sources.length > 0;
+
+      const warningContainer = document.getElementById("warnings");
+      warningContainer.replaceChildren();
+      for (const warning of result.warnings) {
+        const notice = document.createElement("p");
+        notice.className = "notice";
+        notice.textContent = warning;
+        warningContainer.append(notice);
+      }
+      dossier.hidden = false;
+      saveButton.disabled = false;
+      printButton.disabled = false;
+    }
+
+    async function prepareDossier() {
+      if (!clientSelect.value) {
+        setStatus("Selecciona un cliente.", "error");
+        return;
+      }
+      prepareButton.disabled = true;
+      clientSelect.disabled = true;
+      dossier.hidden = true;
+      saveButton.disabled = true;
+      printButton.disabled = true;
+      setStatus("Reuniendo notas relacionadas...");
+      try {
+        const query = new URLSearchParams({ client_id: clientSelect.value });
+        const response = await fetch(`/api/meeting-prep/prepare?${query}`, {
+          cache: "no-store",
+          headers: { "Accept": "application/json" }
+        });
+        const result = await response.json();
+        if (!response.ok) throw result;
+        renderDossier(result);
+        setStatus("Dossier listo. Cada sección indica su nota de origen.", "success");
+      } catch (error) {
+        showError(error);
+      } finally {
+        clientSelect.disabled = false;
+        prepareButton.disabled = !clientSelect.value;
+      }
+    }
+
+    clientSelect.addEventListener("change", () => {
+      dossier.hidden = true;
+      saveButton.disabled = true;
+      printButton.disabled = true;
+      prepareButton.disabled = !clientSelect.value;
+      setStatus(
+        clientSelect.value
+          ? "Cliente seleccionado. Prepara el dossier cuando quieras."
+          : "Elige un cliente para reunir su contexto."
+      );
+    });
+    prepareButton.addEventListener("click", prepareDossier);
+    saveButton.addEventListener("click", saveDossier);
+    printButton.addEventListener("click", printDossier);
+    loadClients();
+  </script>
+</body>
+</html>

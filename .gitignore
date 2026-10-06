@@ -54,6 +54,7 @@ dmypy.json
 .env
 .env.local
 .env.*.local
+.env.personalizaciones
 
 # Config YAML local (por si algún día vive en el repo durante desarrollo)
 config.yaml
