@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101a2a">
+  <meta name="description" content="Revisión local de planes de proyecto en Obsidian.">
+  <title>BlackBelt Plan</title>
+  <link rel="manifest" href="/plan/manifest.webmanifest">
+  <link rel="icon" href="/plan/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/plan/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/plan/" aria-label="BlackBelt Plan, inicio">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <span>
+          <strong>BlackBelt</strong>
+          <small>PLANIFICACIÓN</small>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <span class="local-indicator"><span></span> Local</span>
+        <button id="print-button" class="button button-quiet" type="button" disabled>
+          Imprimir
+        </button>
+        <button id="install-button" class="button button-quiet hidden" type="button">
+          Instalar app
+        </button>
+        <button id="refresh-button" class="button button-quiet" type="button">
+          Actualizar
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">CENTRO DE PLANIFICACIÓN</p>
+          <h1>De propuesta a plan revisable.</h1>
+          <p class="hero-copy">
+            Prepara el borrador con fuentes trazables, revísalo en Obsidian y
+            apruébalo solo cuando esté listo.
+          </p>
+        </div>
+        <div class="hero-note">
+          <span class="shield" aria-hidden="true">LOCAL POR DEFECTO</span>
+          <p>
+            Cloud solo se usa por petición expresa, tras revisar el payload
+            redactado. La anonimización no puede garantizarse.
+          </p>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Espacio de trabajo de planes">
+        <aside class="sidebar">
+          <section class="panel prepare-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">NUEVO BORRADOR</p>
+                <h2>Preparar plan</h2>
+              </div>
+              <span class="step-badge">01</span>
+            </div>
+            <form id="prepare-form">
+              <label for="client-select">Cliente</label>
+              <select id="client-select" name="client_id" required>
+                <option value="">Cargando clientes...</option>
+              </select>
+
+              <label for="project-id">Proyecto <span>opcional</span></label>
+              <select id="project-id" name="project_id" disabled>
+                <option value="">Selecciona primero un cliente</option>
+              </select>
+
+              <section id="project-hub" class="hub-editor" aria-label="Panorama de proyecto">
+                <p class="eyebrow">HUB DEL PROYECTO</p>
+                <label for="hub-source-ids">
+                  Fuentes para el panorama
+                  <span>elige las fuentes del cliente que pertenecen al proyecto</span>
+                </label>
+                <select id="hub-source-ids" multiple size="5" disabled>
+                  <option value="">Selecciona primero un proyecto</option>
+                </select>
+                <button id="preview-panorama-button" class="button button-quiet button-wide" type="button" disabled>
+                  Generar y revisar diff
+                </button>
+                <div id="panorama-review" class="panorama-review" hidden>
+                  <p class="form-footnote">
+                    Revisa el cambio. Solo se reemplazará el bloque gestionado
+                    y sus propiedades de enlaces; las fuentes originales y tus
+                    otras propiedades quedan intactas.
+                  </p>
+                  <pre id="panorama-diff" class="panorama-diff"></pre>
+                  <div class="panorama-review-actions">
+                    <button id="confirm-panorama-button" class="button button-primary" type="button">
+                      Confirmar actualización
+                    </button>
+                    <button id="cancel-panorama-button" class="button button-quiet" type="button">
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <label for="proposal-ids">Propuestas <span>opcional, puedes elegir varias</span></label>
+              <select id="proposal-ids" name="proposal_ids" multiple size="3" disabled>
+                <option value="">Selecciona primero un cliente</option>
+              </select>
+
+              <label for="meeting-ids">Reuniones <span>opcional, puedes elegir varias</span></label>
+              <select id="meeting-ids" name="meeting_ids" multiple size="3" disabled>
+                <option value="">Selecciona primero un cliente</option>
+              </select>
+              <label for="dossier-ids">Dossieres <span>opcional, puedes elegir varios</span></label>
+              <select id="dossier-ids" name="dossier_ids" multiple size="3" disabled>
+                <option value="">Selecciona primero un cliente</option>
+              </select>
+              <p class="form-footnote">
+                Al seleccionar un proyecto, sus fuentes vinculadas quedan
+                preseleccionadas para el plan. Puedes ajustar cada selección
+                múltiple antes de generar.
+              </p>
+
+              <button id="prepare-button" class="button button-primary button-wide" type="submit">
+                <span aria-hidden="true">+</span> Generar borrador local
+              </button>
+              <p class="form-footnote">
+                Se guardará en <code>022 - PLANES_BORRADOR</code>. El modelo
+                configurado es local.
+              </p>
+            </form>
+          </section>
+
+          <section class="panel queue-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">022 · REVISIÓN</p>
+                <h2>Pendientes</h2>
+              </div>
+              <span id="draft-count" class="count-badge">0</span>
+            </div>
+            <div id="draft-list" class="plan-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel queue-panel archived-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">023 · CANCELADOS</p>
+                <h2>Pospuestos o cancelados</h2>
+              </div>
+              <span id="archived-count" class="count-badge">0</span>
+            </div>
+            <div id="archived-list" class="plan-list" aria-live="polite"></div>
+          </section>
+
+          <section class="panel queue-panel approved-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">021 · PUBLICADOS</p>
+                <h2>Aprobados</h2>
+              </div>
+              <span id="approved-count" class="count-badge">0</span>
+            </div>
+            <div id="approved-list" class="plan-list" aria-live="polite"></div>
+          </section>
+        </aside>
+
+        <section class="panel detail-panel" aria-live="polite">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-icon" aria-hidden="true">↗</div>
+            <p class="eyebrow">TU ESPACIO DE TRABAJO</p>
+            <h2>Selecciona un plan</h2>
+            <p>Elige un borrador para validar y aprobar, o un plan publicado
+              para crear una nueva revisión.</p>
+          </div>
+          <div id="detail-content" class="hidden"></div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+  <script src="/plan/app.js" defer></script>
+</body>
+</html>

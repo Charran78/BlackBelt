@@ -98,6 +98,11 @@ Proyecto relacionado: [[001 - PROYECTOS/Proyecto Aura|Aura]].
     )
     _write_note(
         vault,
+        "022 - PLANES_BORRADOR/PLAN-001.md",
+        "# Borrador\n\nCONTENIDO-BORRADOR-PLAN",
+    )
+    _write_note(
+        vault,
         ".obsidian/private.md",
         "# Nota oculta\n\nCONTENIDO-OCULTO",
     )
@@ -130,7 +135,12 @@ Proyecto relacionado: [[001 - PROYECTOS/Proyecto Aura|Aura]].
     assert all("CREDENCIALES" not in hit.path for hit in semantic_hits)
     assert all("ULTRASECRETO" not in hit.content for hit in semantic_hits)
     assert all("PLANTILLAS" not in hit.path for hit in semantic_hits)
-    assert all("CONTENIDO-PLANTILLA" not in batch for batch in embedder.batches)
+    assert all("022 - PLANES_BORRADOR" not in hit.path for hit in semantic_hits)
+    assert all(
+        excluded not in batch
+        for batch in embedder.batches
+        for excluded in ("CONTENIDO-PLANTILLA", "CONTENIDO-BORRADOR-PLAN")
+    )
 
     client_note.write_text(
         "# Ana García\n\nPreparar el despliegue del servidor.\n",
@@ -141,7 +151,7 @@ Proyecto relacionado: [[001 - PROYECTOS/Proyecto Aura|Aura]].
     assert service.search("celebración de una boda") == []
 
 
-def test_reindex_removes_templates_already_present_in_older_index(
+def test_reindex_removes_newly_excluded_directories_from_older_index(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,6 +161,11 @@ def test_reindex_removes_templates_already_present_in_older_index(
         "000 - PLANTILLAS/Ficha CRM.md",
         "# Plantilla\n\nContenido de plantilla.",
     )
+    _write_note(
+        vault,
+        "022 - PLANES_BORRADOR/PLAN-001.md",
+        "# Borrador\n\nContenido de borrador.",
+    )
     embedder = DeterministicEmbedder()
     service = _service(vault, tmp_path / "index", embedder)
     monkeypatch.setattr(
@@ -159,17 +174,22 @@ def test_reindex_removes_templates_already_present_in_older_index(
         {"006 - credenciales"},
     )
 
-    assert service.index().indexed == 1
+    assert service.index().indexed == 2
 
     monkeypatch.setattr(
         semantic_search,
         "_EXCLUDED_DIRECTORY_NAMES",
-        {"000 - plantillas", "006 - credenciales"},
+        {
+            "000 - plantillas",
+            "006 - credenciales",
+            "022 - planes_borrador",
+        },
     )
     stats = service.index()
 
-    assert stats.removed == 1
+    assert stats.removed == 2
     assert service.search("plantilla") == []
+    assert service.search("borrador") == []
 
 
 def test_index_removes_deleted_notes_from_both_rankers(tmp_path: Path) -> None:

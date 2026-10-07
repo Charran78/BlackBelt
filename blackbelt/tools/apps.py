@@ -24,7 +24,7 @@ from blackbelt.webapps import create_app
 
 console = Console()
 LOOPBACK_HOST = "127.0.0.1"
-_APPLICATIONS = ("soma", "ghostwriter", "meetings")
+_APPLICATIONS = ("soma", "ghostwriter", "meetings", "plan")
 _CHILD_ARGUMENT = "--blackbelt-webapps-child="
 _DESKTOP_ARGUMENT = "--blackbelt-desktop-launch="
 _START_TIMEOUT_SECONDS = 20.0
@@ -79,12 +79,18 @@ def run(args: Sequence[str] | str | None = None) -> None:
         )
         return
     if parsed.application is None:
-        parser.error("indica soma, ghostwriter, meetings o usa --stop.")
+        parser.error(
+            "indica soma, ghostwriter, meetings, plan o usa --stop."
+        )
     if parsed.install_shortcut:
         if parsed.application != "ghostwriter":
-            parser.error("--install-shortcut solo está disponible para ghostwriter.")
+            parser.error(
+                "--install-shortcut solo está disponible para ghostwriter."
+            )
         _install_desktop_shortcut()
-        console.print("[green]Acceso directo de Ghost Writer creado en el escritorio.[/]")
+        console.print(
+            "[green]Acceso directo de Ghost Writer creado en el escritorio.[/]"
+        )
         return
 
     page_path = parsed.application
@@ -447,7 +453,9 @@ def _log_tail(log_path: Path) -> str:
 
 def _install_desktop_shortcut() -> None:
     if os.name != "nt":
-        raise RuntimeError("La creación automática del acceso directo requiere Windows.")
+        raise RuntimeError(
+            "La creación automática del acceso directo requiere Windows."
+        )
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if not pythonw.is_file():
         raise RuntimeError(

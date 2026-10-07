@@ -35,6 +35,7 @@ blackbelt = [
     "data/webapps/*.js",
     "data/webapps/*/*.js",
     "data/webapps/*/*.html",
+    "data/webapps/*/*.css",
     "data/webapps/*/*.webmanifest",
     "data/webapps/*/icons/*.svg",
 ]

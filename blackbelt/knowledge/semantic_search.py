@@ -191,6 +191,7 @@ _STOP_WORDS = frozenset(
 _EXCLUDED_DIRECTORY_NAMES = {
     "000 - plantillas",
     "006 - credenciales",
+    "022 - planes_borrador",
 }
 
 

@@ -39,6 +39,10 @@ TOOLS = {
         "module": "blackbelt.tools.meetings",
         "description": "Prepara reuniones desde notas permitidas de Obsidian",
     },
+    "plan": {
+        "module": "blackbelt.tools.plan",
+        "description": "Prepara, valida y aprueba planes trazables",
+    },
     "chat": {
         "module": "blackbelt.tools.chat",
         "description": "Chat con Ollama local",

@@ -109,6 +109,31 @@ def test_launcher_opens_meeting_assistant(
     assert observed["ran"] is True
 
 
+def test_launcher_opens_plan_pwa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+
+    class FakeServer:
+        def __init__(self, config: Any) -> None:
+            observed["config"] = config
+
+        def run(self) -> None:
+            observed["ran"] = True
+
+    monkeypatch.setattr(apps, "_load_configuration", lambda: None)
+    monkeypatch.setattr(apps, "create_app", lambda **kwargs: kwargs)
+    monkeypatch.setattr(apps, "_BrowserOpeningServer", FakeServer)
+    monkeypatch.setattr(apps, "_blackbelt_server_is_ready", lambda port: False)
+    monkeypatch.setenv("BLACKBELT_WEBAPPS_PORT", "9125")
+
+    apps.run(["plan"])
+
+    assert observed["config"].app == {"default_page": "plan"}
+    assert observed["config"].port == 9125
+    assert observed["ran"] is True
+
+
 def test_meetings_uses_its_pwa_port_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -117,6 +142,7 @@ def test_meetings_uses_its_pwa_port_by_default(
 
     assert apps._port_from_environment("meetings") == 8766
     assert apps._port_from_environment("ghostwriter") == 8765
+    assert apps._port_from_environment("plan") == 8765
 
 
 def test_meetings_port_can_be_overridden_independently(

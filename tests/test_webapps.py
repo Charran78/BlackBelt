@@ -6,12 +6,15 @@ import asyncio
 import re
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
 
 from blackbelt import webapps
+from blackbelt.knowledge.plan import parse_plan_markdown, render_plan_markdown
 from blackbelt.webapps import create_app
 
 
@@ -19,9 +22,11 @@ def _asset_root(tmp_path: Path) -> Path:
     soma_dir = tmp_path / "soma"
     ghostwriter_dir = tmp_path / "ghostwriter"
     meetings_dir = tmp_path / "meetings"
+    plan_dir = tmp_path / "plan"
     soma_dir.mkdir()
     ghostwriter_dir.mkdir()
     meetings_dir.mkdir()
+    plan_dir.mkdir()
     (soma_dir / "somaguard.html").write_text(
         "<title>SOMA test</title>",
         encoding="utf-8",
@@ -34,7 +39,41 @@ def _asset_root(tmp_path: Path) -> Path:
         "<title>Meetings test</title>",
         encoding="utf-8",
     )
+    (plan_dir / "index.html").write_text(
+        "<title>Plan test</title>",
+        encoding="utf-8",
+    )
     return tmp_path
+
+
+def _web_plan(plan_id: str = "PLAN-001") -> dict[str, Any]:
+    return {
+        "id": plan_id,
+        "cliente": "CL001",
+        "proyecto": None,
+        "proyecto_nombre": "Web de prueba",
+        "estado": "borrador",
+        "objetivo": "Preparar una web de prueba.",
+        "alcance": {"incluye": ["Web"], "excluye": []},
+        "criterios_aceptacion": ["La página se puede revisar."],
+        "creado": "2026-10-06",
+        "actualizado": "2026-10-06",
+        "plantillas_aplicadas": [{"id": "PLT-001", "version": 1}],
+        "generacion": {
+            "motor": "local",
+            "proveedor": "ollama",
+            "modelo": "test-model",
+            "fecha": "2026-10-06T10:00:00+00:00",
+        },
+        "entregables": [],
+        "tareas": [],
+        "dependencias": [],
+        "riesgos": [],
+        "restricciones": [],
+        "supuestos": [],
+        "preguntas": [],
+        "fuentes": [],
+    }
 
 
 def test_pages_health_redirect_and_service_worker(tmp_path: Path) -> None:
@@ -49,6 +88,7 @@ def test_pages_health_redirect_and_service_worker(tmp_path: Path) -> None:
     assert "SOMA test" in client.get("/soma/").text
     assert "Ghost Writer test" in client.get("/ghostwriter/").text
     assert "Meetings test" in client.get("/meetings/").text
+    assert "Plan test" in client.get("/plan/").text
 
     service_worker = client.get("/soma-sw.js")
     assert service_worker.status_code == 200
@@ -102,6 +142,19 @@ def test_pages_health_redirect_and_service_worker(tmp_path: Path) -> None:
         "512x512",
     }
     assert client.get("/meetings/icons/icon.svg").status_code == 200
+    plan_manifest_response = client.get("/plan/manifest.webmanifest")
+    plan_manifest = plan_manifest_response.json()
+    assert plan_manifest_response.status_code == 200
+    assert plan_manifest["start_url"] == "/plan/"
+    assert plan_manifest["scope"] == "/plan/"
+    assert plan_manifest["display"] == "standalone"
+    assert client.get("/plan/icons/icon.svg").status_code == 200
+    plan_worker = client.get("/plan/plan-sw.js")
+    assert plan_worker.status_code == 200
+    assert plan_worker.headers["cache-control"] == "no-cache"
+    assert "CACHEABLE_PATHS.has(requestUrl.pathname)" in plan_worker.text
+    assert "/api/plan" not in plan_worker.text
+
     meetings_worker = client.get("/meetings/meetings-sw.js")
     assert meetings_worker.status_code == 200
     assert meetings_worker.headers["cache-control"] == "no-cache"
@@ -372,6 +425,380 @@ def test_meeting_assistant_page_is_local_and_renders_note_text_safely() -> None:
     assert 'document.createElement("table")' in page
     assert ".source { overflow: visible; break-inside: auto;" in page
     assert "@page { size: auto; margin: 10mm; }" in page
+
+
+def test_plan_pwa_serves_local_shell_without_caching_vault_data() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    webapp_root = repository_root / "blackbelt" / "data" / "webapps" / "plan"
+    client = TestClient(create_app(default_page="plan"), base_url="http://127.0.0.1")
+
+    page = client.get("/plan/")
+    script = client.get("/plan/app.js")
+    styles = client.get("/plan/styles.css")
+    worker = client.get("/plan/plan-sw.js")
+
+    assert page.status_code == script.status_code == styles.status_code == 200
+    assert page.text == (webapp_root / "index.html").read_text(encoding="utf-8")
+    assert script.text == (webapp_root / "app.js").read_text(encoding="utf-8")
+    assert styles.text == (webapp_root / "styles.css").read_text(encoding="utf-8")
+    assert page.headers["cache-control"] == "no-cache"
+    assert 'rel="manifest" href="/plan/manifest.webmanifest"' in page.text
+    assert 'id="print-button"' in page.text
+    assert 'navigator.serviceWorker.register("/plan/plan-sw.js")' in script.text
+    assert 'elements.printButton.addEventListener("click"' in script.text
+    assert "window.print()" in script.text
+    assert "innerHTML" not in script.text
+    assert "/api/plan/drafts" in script.text
+    assert "confirm: true" in script.text
+    assert "@media print" in styles.text
+    assert ".detail-actions" in styles.text
+    assert ".detail-panel" in styles.text
+    assert 'CACHE_NAME = "plan-shell-v8"' in worker.text
+    assert 'id="project-id"' in page.text
+    assert 'id="proposal-ids"' in page.text
+    assert 'id="meeting-ids"' in page.text
+    assert 'id="dossier-ids"' in page.text
+    assert 'id="hub-source-ids"' in page.text
+    assert "/api/plan/projects/" in script.text
+    assert "/cloud-improve/preview" in script.text
+    assert "/cloud-improve/generate" in script.text
+    assert "/cloud-improve/apply" in script.text
+    assert "payload" in page.text
+    assert "anonimización" in page.text
+    assert "/api/plan/context" in script.text
+    assert "project_id=${encodeURIComponent(requestedProjectId)}" in script.text
+    assert "Disponible para vincular" in script.text
+    assert "Boolean(requestedProjectId)" in script.text
+    assert "Cancelar / posponer" in script.text
+    assert "restoreArchivedDraft" in script.text
+    assert "approve" not in worker.text
+    assert "/api/plan/" not in worker.text
+    assert worker.headers["cache-control"] == "no-cache"
+
+
+def test_plan_api_lists_validates_approves_and_revises_without_exposing_vault_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "Mi bóveda"
+    review_directory = vault / "022 - PLANES_BORRADOR"
+    client_directory = vault / "005 - CLIENTES"
+    review_directory.mkdir(parents=True)
+    client_directory.mkdir()
+    (client_directory / "CL001 - Ana.md").write_text(
+        "---\nnombre: Ana\nestado: cliente\n---\n",
+        encoding="utf-8",
+    )
+    draft_path = review_directory / "PLAN-001.md"
+    draft_path.write_text(
+        render_plan_markdown(_web_plan(), "Resumen de revisión."),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        webapps.cfg,
+        "PLAN_AUDIT_FILE",
+        tmp_path / "audit" / "plan.jsonl",
+    )
+    client = TestClient(
+        create_app(obsidian_root=vault),
+        base_url="http://127.0.0.1",
+    )
+
+    clients_response = client.get("/api/plan/clients")
+    drafts_response = client.get("/api/plan/drafts")
+    detail_response = client.get("/api/plan/drafts/PLAN-001")
+
+    assert clients_response.status_code == 200
+    assert clients_response.headers["cache-control"] == "no-store"
+    assert clients_response.json()[0]["client_id"] == "CL001"
+    assert drafts_response.status_code == 200
+    assert drafts_response.headers["cache-control"] == "no-store"
+    assert drafts_response.json()[0]["plan_id"] == "PLAN-001"
+    assert str(vault) not in drafts_response.text
+    assert detail_response.status_code == 200
+    assert detail_response.json()["plan"]["objetivo"] == (
+        "Preparar una web de prueba."
+    )
+    obsidian_uri = detail_response.json()["obsidian_uri"]
+    assert obsidian_uri.startswith("obsidian://open?")
+    assert "%20" in obsidian_uri
+    assert "+" not in urlsplit(obsidian_uri).query
+    assert parse_qs(urlsplit(obsidian_uri).query)["path"] == [
+        str(draft_path.resolve())
+    ]
+    assert str(vault) not in detail_response.text
+
+    unconfirmed = client.post(
+        "/api/plan/drafts/PLAN-001/approve",
+        json={"confirm": False},
+    )
+    assert unconfirmed.status_code == 409
+    assert draft_path.exists()
+
+    approved = client.post(
+        "/api/plan/drafts/PLAN-001/approve",
+        json={"confirm": True},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["relative_path"].startswith(
+        "021 - PLANES_APROBADOS/"
+    )
+    assert not draft_path.exists()
+    assert list((vault / "021 - PLANES_APROBADOS").glob("PLAN-001*.md"))
+
+    approved_list = client.get("/api/plan/approved")
+    approved_detail = client.get("/api/plan/approved/PLAN-001")
+    assert approved_list.status_code == approved_detail.status_code == 200
+    assert approved_list.json()[0]["plan_id"] == "PLAN-001"
+    assert approved_detail.json()["approved_exists"] is True
+
+    revised = client.post("/api/plan/approved/PLAN-001/revise")
+    assert revised.status_code == 201, revised.text
+    revision_path = vault / revised.json()["relative_path"]
+    assert revision_path.parent == review_directory
+    assert revision_path.is_file()
+
+    revised_plan, narrative = parse_plan_markdown(
+        revision_path.read_text(encoding="utf-8")
+    )
+    revised_plan["objetivo"] = "Objetivo actualizado manualmente."
+    revision_path.write_text(
+        render_plan_markdown(revised_plan, narrative),
+        encoding="utf-8",
+    )
+    preview = client.post(
+        "/api/plan/drafts/PLAN-001/preview-approval",
+        json={"update": True},
+    )
+    assert preview.status_code == 200, preview.text
+    assert "Objetivo actualizado manualmente." in preview.json()["preview"]
+    assert str(vault) not in preview.text
+    assert revision_path.exists()
+
+    update = client.post(
+        "/api/plan/drafts/PLAN-001/approve",
+        json={"confirm": True, "update": True},
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["updated"] is True
+    assert not revision_path.exists()
+
+    cloud_override = client.post(
+        "/api/plan/prepare",
+        json={
+            "client_id": "CL001",
+            "engine": "cloud",
+        },
+    )
+    assert cloud_override.status_code == 422
+
+
+def test_plan_context_is_client_scoped_and_archives_can_be_restored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "Mi bóveda"
+    for folder in (
+        "001 - PROYECTOS",
+        "005 - CLIENTES",
+        "013 - PROPUESTA _PRESUPUESTO",
+        "019 - REUNIONES",
+        "020 - DOSSIERES",
+    ):
+        (vault / folder).mkdir(parents=True)
+    (vault / "005 - CLIENTES" / "CL001 - Ana.md").write_text(
+        "---\nnombre: Ana\nproyectos_activos:\n  - PROY001 - Web\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "001 - PROYECTOS" / "PROY001 - Web.md").write_text(
+        "---\ncliente: CL001\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "001 - PROYECTOS" / "PROY002 - Privado.md").write_text(
+        "---\ncliente: CL001\nprivado: true\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "013 - PROPUESTA _PRESUPUESTO" / "PR001 - Web.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY001\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "019 - REUNIONES" / "RE001 - CL001.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY001\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "020 - DOSSIERES" / "CL001_2026-10-07_01.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY001\n---\nSeguimiento.",
+        encoding="utf-8",
+    )
+    (vault / "013 - PROPUESTA _PRESUPUESTO" / "PR002 - Otro.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY009\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "019 - REUNIONES" / "RE002 - CL001.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY009\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "020 - DOSSIERES" / "CL001_2026-10-07_02.md").write_text(
+        "---\ncliente: CL001\nproyecto: PROY009\n---\n",
+        encoding="utf-8",
+    )
+    (vault / "020 - DOSSIERES" / "CL009_2026-10-07_01.md").write_text(
+        "---\ncliente: CL009\n---\nNo debe aparecer.",
+        encoding="utf-8",
+    )
+    (vault / "001 - PROYECTOS" / "PROY009 - Otro cliente.md").write_text(
+        "---\ncliente: CL009\n---\n",
+        encoding="utf-8",
+    )
+    draft_dir = vault / "022 - PLANES_BORRADOR"
+    draft_dir.mkdir()
+    draft_path = draft_dir / "PLAN-001.md"
+    draft_path.write_text(
+        render_plan_markdown(_web_plan(), "Pendiente para más tarde."),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        webapps.cfg,
+        "PLAN_AUDIT_FILE",
+        tmp_path / "audit" / "plan.jsonl",
+    )
+    client = TestClient(
+        create_app(obsidian_root=vault),
+        base_url="http://127.0.0.1",
+    )
+
+    context = client.get("/api/plan/context", params={"client_id": "CL001"})
+    assert context.status_code == 200, context.text
+    assert [item["id"] for item in context.json()["projects"]] == ["PROY001"]
+    assert [item["id"] for item in context.json()["proposals"]] == [
+        "PR001",
+        "PR002",
+    ]
+    assert [item["id"] for item in context.json()["meetings"]] == [
+        "RE001",
+        "RE002",
+    ]
+    assert [item["id"] for item in context.json()["dossiers"]] == [
+        "CL001_2026-10-07_01",
+        "CL001_2026-10-07_02",
+    ]
+    assert "CL009" not in context.text
+    assert context.headers["cache-control"] == "no-store"
+    project_context = client.get(
+        "/api/plan/context",
+        params={"client_id": "CL001", "project_id": "PROY001"},
+    )
+    assert project_context.status_code == 200, project_context.text
+    assert [item["id"] for item in project_context.json()["proposals"]] == [
+        "PR001",
+    ]
+    assert [item["id"] for item in project_context.json()["meetings"]] == [
+        "RE001",
+    ]
+    assert [item["id"] for item in project_context.json()["dossiers"]] == [
+        "CL001_2026-10-07_01",
+    ]
+
+    unconfirmed = client.post(
+        "/api/plan/drafts/PLAN-001/archive",
+        json={"confirm": False},
+    )
+    assert unconfirmed.status_code == 409
+    assert draft_path.exists()
+
+    archived = client.post(
+        "/api/plan/drafts/PLAN-001/archive",
+        json={"confirm": True},
+    )
+    archived_path = vault / archived.json()["relative_path"]
+    assert archived.status_code == 200, archived.text
+    assert archived_path.parent == vault / "023 - PLANES_CANCELADOS"
+    assert archived_path.read_text(encoding="utf-8") == render_plan_markdown(
+        _web_plan(),
+        "Pendiente para más tarde.",
+    )
+    assert client.get("/api/plan/drafts").json() == []
+    assert client.get("/api/plan/archived").json()[0]["plan_id"] == "PLAN-001"
+
+    restored = client.post(
+        "/api/plan/archived/PLAN-001/restore",
+        json={"confirm": True},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["relative_path"] == (
+        "022 - PLANES_BORRADOR/PLAN-001.md"
+    )
+    assert not archived_path.exists()
+    assert draft_path.exists()
+    assert client.get("/api/plan/archived").json() == []
+
+
+def test_plan_prepare_api_returns_model_collection_warnings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "Mi bóveda"
+    draft_path = vault / "022 - PLANES_BORRADOR" / "PLAN-001.md"
+    draft_path.parent.mkdir(parents=True)
+    draft_path.write_text("Borrador de prueba.", encoding="utf-8")
+    prepared = SimpleNamespace(
+        plan_id="PLAN-001",
+        draft_path=draft_path,
+        source_paths=("013 - PROPUESTA _PRESUPUESTO/PR001 - Web.md",),
+        warnings=("Se descartaron restricciones sugeridas.",),
+    )
+    prepare_arguments: dict[str, Any] = {}
+
+    def prepare(**kwargs: Any) -> SimpleNamespace:
+        prepare_arguments.update(kwargs)
+        return prepared
+
+    service = SimpleNamespace(
+        vault=vault,
+        prepare=prepare,
+    )
+    monkeypatch.setattr(webapps, "_plan_service", lambda _request: service)
+    client = TestClient(
+        create_app(obsidian_root=vault),
+        base_url="http://127.0.0.1",
+    )
+
+    response = client.post(
+        "/api/plan/prepare",
+        json={
+            "client_id": "CL001",
+            "project_id": "PROY001",
+            "proposal_ids": ["PR001", "PR002"],
+            "meeting_ids": ["RE001", "RE002"],
+            "dossier_ids": ["CL001_2026-10-07_01"],
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["warnings"] == [
+        "Se descartaron restricciones sugeridas."
+    ]
+    assert response.json()["relative_path"] == (
+        "022 - PLANES_BORRADOR/PLAN-001.md"
+    )
+    assert prepare_arguments == {
+        "client": "CL001",
+        "project": "PROY001",
+        "proposal": None,
+        "proposals": ["PR001", "PR002"],
+        "meetings": ["RE001", "RE002"],
+        "dossiers": ["CL001_2026-10-07_01"],
+        "engine": "local",
+    }
+    prepare_arguments.clear()
+    omitted_sources = client.post(
+        "/api/plan/prepare",
+        json={"client_id": "CL001", "project_id": "PROY001"},
+    )
+    assert omitted_sources.status_code == 201, omitted_sources.text
+    assert prepare_arguments["proposals"] is None
+    assert prepare_arguments["meetings"] is None
+    assert prepare_arguments["dossiers"] is None
 
 
 def test_html_pages_link_static_manifests_and_register_scoped_workers() -> None:

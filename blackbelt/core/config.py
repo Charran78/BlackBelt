@@ -56,6 +56,31 @@ SEARCH_INDEX_DIR = Path(
         str(Path.home() / ".blackbelt" / "search"),
     )
 ).expanduser()
+PLAN_DRAFT_DIR = Path(
+    os.getenv(
+        "BLACKBELT_PLAN_DRAFT_DIR",
+        str(Path.home() / ".blackbelt" / "plans" / "drafts"),
+    )
+).expanduser()
+PLAN_AUDIT_FILE = Path(
+    os.getenv(
+        "BLACKBELT_PLAN_AUDIT_FILE",
+        str(Path.home() / ".blackbelt" / "audit" / "plan.jsonl"),
+    )
+).expanduser()
+PLAN_CLOUD_REVIEW_FILE = Path(
+    os.getenv(
+        "BLACKBELT_PLAN_CLOUD_REVIEW_FILE",
+        str(Path.home() / ".blackbelt" / "plan-cloud-review.yaml"),
+    )
+).expanduser()
+PLAN_LOCAL_MODEL = os.getenv("PLAN_LOCAL_MODEL", "qwen2.5:1.5b").strip()
+PLAN_CLOUD_MODEL = os.getenv(
+    "PLAN_CLOUD_MODEL",
+    os.getenv("GHOSTWRITER_OLLAMA_CLOUD_MODEL", "gpt-oss:120b-cloud"),
+).strip()
+PLAN_NUM_CTX = int(os.getenv("PLAN_NUM_CTX", "4096"))
+PLAN_NUM_PREDICT = int(os.getenv("PLAN_NUM_PREDICT", "3000"))
 
 
 def ollama_options() -> dict:
@@ -66,6 +91,18 @@ def ollama_options() -> dict:
     }
     if OLLAMA_NUM_THREAD is not None:
         opts["num_thread"] = OLLAMA_NUM_THREAD
+    return opts
+
+
+def plan_ollama_options() -> dict:
+    """Return planning-specific generation limits without changing other apps."""
+    opts = ollama_options()
+    opts.update(
+        {
+            "num_ctx": PLAN_NUM_CTX,
+            "num_predict": PLAN_NUM_PREDICT,
+        }
+    )
     return opts
 
 

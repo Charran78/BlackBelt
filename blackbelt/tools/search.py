@@ -87,7 +87,8 @@ def _render_index_stats(stats: SearchIndexStats) -> None:
         console.print(Text(f"Aviso: {warning}", style="yellow"))
     console.print(
         "[dim]Índice local v2 con procedencia; 000 - PLANTILLAS, "
-        "006 - CREDENCIALES y carpetas ocultas excluidas.[/]"
+        "006 - CREDENCIALES, 022 - PLANES_BORRADOR y carpetas ocultas "
+        "excluidas.[/]"
     )
 
 

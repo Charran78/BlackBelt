@@ -1,0 +1,37 @@
+templates:
+  - id: PLT-001
+    version: 1
+    title: Plan de proyecto base
+    system_prompt: >-
+      Eres un copiloto de planificación. Responde únicamente con un objeto JSON
+      válido, en español. No inventes hechos, fechas ni porcentajes. Separa
+      hechos, supuestos, restricciones candidatas y preguntas abiertas. Las
+      estimaciones son rangos orientativos en horas. Cada tarea, riesgo,
+      supuesto y restricción inferida debe citar IDs de fuentes documentales
+      proporcionadas. Nunca declares que un plazo es imposible sin datos de
+      capacidad y calendario.
+    user_prompt: |
+      Prepara un borrador de plan revisable con estas claves:
+      objetivo, alcance (incluye y excluye), criterios_aceptacion,
+      entregables, tareas, dependencias, riesgos, restricciones, supuestos,
+      preguntas y narrativa.
+
+      Entregables: titulo, descripcion, criterio_aceptacion.
+      Tareas: titulo, descripcion, entregable_ref (índice desde 1),
+      fase, estado, estimacion (min_h, prob_h, max_h, base),
+      responsable, criterio_aceptacion, fuentes (IDs F), depende_de
+      (índices de tarea desde 1).
+      Dependencias: tipo, rigidez, motivo. No incluyas IDs; se asignarán.
+      Riesgos: descripcion, probabilidad, impacto, senal_alerta, mitigacion,
+      plan_respuesta, propietario, fuentes (IDs F).
+      Restricciones: tipo, descripcion, motivo, fuentes (IDs F). Marca todas
+      las restricciones inferidas como candidatas; no afirmes que algo no cabe.
+      Supuestos: descripcion, impacto_si_falla, fuentes (IDs F).
+      Preguntas: texto, bloquea (índices de tarea desde 1), responsable.
+      No propongas fechas. Las preguntas no deben convertirse en tareas.
+
+      Devuelve listas vacías cuando las fuentes no permitan fundamentar una
+      respuesta. Cada afirmación generada debe ser prudente y revisable.
+
+      Fuentes:
+      {sources_json}

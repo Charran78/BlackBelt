@@ -6,25 +6,30 @@ import importlib
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import unicodedata
+from collections.abc import Callable
 from datetime import date, datetime
+from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path, PureWindowsPath
-from typing import Any, Callable, Literal
-from urllib.parse import urlsplit
+from typing import Any, Literal
+from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
 
+import ollama
 import requests
+import yaml
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-import yaml
 
+from blackbelt.core import config as cfg
 from blackbelt.knowledge.meeting_prep import (
     AmbiguousMeetingClientError,
     MeetingClientNotFoundError,
@@ -34,7 +39,20 @@ from blackbelt.knowledge.meeting_prep import (
     MeetingPreparationService,
     client_context_markdown,
 )
-
+from blackbelt.knowledge.plan import validate_plan
+from blackbelt.knowledge.plan_service import (
+    ApprovalResult,
+    CloudImprovementPreview,
+    CloudImprovementResult,
+    PlanService,
+    PlanServiceError,
+)
+from blackbelt.knowledge.project_hub import (
+    PanoramaPreview,
+    ProjectHubError,
+    ProjectHubService,
+    ProjectSourceOption,
+)
 
 LOGGER = logging.getLogger(__name__)
 _MAX_REQUEST_BYTES = 64 * 1024
@@ -142,6 +160,205 @@ class MeetingSaveResponse(BaseModel):
     relative_path: str
 
 
+class PlanClientOption(BaseModel):
+    client_id: str
+    name: str
+    status: str
+
+
+class PlanSourceOption(BaseModel):
+    id: str
+    title: str
+    relative_path: str
+
+
+class PlanClientSourcesResponse(BaseModel):
+    projects: list[PlanSourceOption]
+    proposals: list[PlanSourceOption]
+    meetings: list[PlanSourceOption]
+    dossiers: list[PlanSourceOption]
+
+
+class ProjectHubSourceListResponse(BaseModel):
+    sources: list[ProjectSourceOption]
+
+
+class ProjectPanoramaPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    client_id: str = Field(min_length=1, max_length=160)
+    source_ids: list[str] = Field(min_length=1, max_length=20)
+
+
+class ProjectPanoramaPreviewResponse(BaseModel):
+    token: str
+    project_id: str
+    source_paths: list[str]
+    diff: str
+
+
+class ProjectPanoramaConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=20, max_length=128)
+    confirm: bool = False
+
+
+class ProjectPanoramaConfirmResponse(BaseModel):
+    project_id: str
+    message: str
+    relative_path: str
+    obsidian_uri: str
+
+
+class PlanPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    client_id: str = Field(min_length=1, max_length=160)
+    project_id: str | None = Field(default=None, max_length=32)
+    proposal_id: str | None = Field(default=None, max_length=32)
+    proposal_ids: list[str] | None = Field(default=None, max_length=10)
+    meeting_ids: list[str] | None = Field(default=None, max_length=10)
+    dossier_ids: list[str] | None = Field(default=None, max_length=10)
+
+
+class PlanConfirmationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = False
+
+
+class PlanApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = False
+    update: bool = False
+
+
+class PlanIssueResponse(BaseModel):
+    level: str
+    path: str
+    message: str
+
+
+class PlanDraftSummaryResponse(BaseModel):
+    plan_id: str
+    cliente: str
+    proyecto: str
+    estado: str
+    actualizado: str
+    tareas: int
+    entregables: int
+    preguntas: int
+    errores: list[str]
+    avisos: list[str]
+    relative_path: str
+    approved_exists: bool
+
+
+class PlanArchivedSummaryResponse(BaseModel):
+    plan_id: str
+    cliente: str
+    proyecto: str
+    actualizado: str
+    errores: list[str]
+    relative_path: str
+
+
+class PlanApprovedSummaryResponse(BaseModel):
+    plan_id: str
+    cliente: str
+    proyecto: str
+    estado: str
+    actualizado: str
+    relative_path: str
+    obsidian_uri: str
+
+
+class PlanDraftResponse(BaseModel):
+    plan_id: str
+    relative_path: str
+    obsidian_uri: str
+    plan: dict[str, Any]
+    narrative: str
+    issues: list[PlanIssueResponse]
+    approved_exists: bool
+
+
+class PlanActionResponse(BaseModel):
+    plan_id: str
+    message: str
+    relative_path: str
+    obsidian_uri: str
+    updated: bool = False
+    unchanged: bool = False
+
+
+class PlanApprovalPreviewResponse(BaseModel):
+    plan_id: str
+    update: bool
+    preview: str
+
+
+class PlanPrepareResponse(BaseModel):
+    plan_id: str
+    message: str
+    relative_path: str
+    obsidian_uri: str
+    source_paths: list[str]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class PlanCloudImprovementPreviewResponse(BaseModel):
+    token: str
+    plan_id: str
+    model: str
+    request: dict[str, Any]
+    request_sha256: str
+    uncovered_deliverables: list[str]
+    redaction_counts: dict[str, int]
+    privacy_notice: str
+
+
+class PlanCloudImprovementGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=32, max_length=128)
+    confirm: bool = False
+
+
+class PlanCloudImprovementGenerateResponse(BaseModel):
+    token: str
+    plan_id: str
+    cancelled: bool = False
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    constraints: list[dict[str, Any]] = Field(default_factory=list)
+    duplicate_count: int = 0
+
+
+class PlanCloudImprovementApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=32, max_length=128)
+    task_ids: list[str] = Field(default_factory=list, max_length=12)
+    constraint_ids: list[str] = Field(default_factory=list, max_length=10)
+
+
+class PlanCloudImprovementDiscardRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=32, max_length=128)
+
+
+class PlanCloudImprovementApplyResponse(BaseModel):
+    plan_id: str
+    message: str
+    relative_path: str
+    obsidian_uri: str
+    accepted_tasks: int
+    accepted_constraints: int
+
+
 def create_app(
     default_page: str = "soma",
     *,
@@ -149,9 +366,9 @@ def create_app(
     assets_root: Path | None = None,
     obsidian_root: Path | None = None,
 ) -> FastAPI:
-    if default_page not in {"soma", "ghostwriter", "meetings"}:
+    if default_page not in {"soma", "ghostwriter", "meetings", "plan"}:
         raise ValueError(
-            "La página inicial debe ser 'soma', 'ghostwriter' o 'meetings'."
+            "La página inicial debe ser 'soma', 'ghostwriter', 'meetings' o 'plan'."
         )
     app = FastAPI(
         title="BlackBelt Local Apps",
@@ -171,6 +388,10 @@ def create_app(
     app.state.assets_root = assets_root or _assets_root()
     app.state.obsidian_root = obsidian_root
     app.state.default_page = default_page
+    app.state.project_hub_previews = {}
+    app.state.project_hub_preview_lock = threading.Lock()
+    app.state.plan_cloud_improvements = {}
+    app.state.plan_cloud_improvement_lock = threading.Lock()
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
@@ -207,6 +428,839 @@ def create_app(
             "meetings-sw.js",
             "application/javascript",
             no_cache=True,
+        )
+
+    @app.get("/plan", include_in_schema=False)
+    @app.get("/plan/", include_in_schema=False)
+    async def plan_page() -> FileResponse:
+        return _html_response(
+            _asset_path(app.state.assets_root, "plan"),
+            no_cache=True,
+        )
+
+    @app.get("/plan/manifest.webmanifest", include_in_schema=False)
+    async def plan_manifest() -> FileResponse:
+        return _webapp_file(
+            "plan",
+            "manifest.webmanifest",
+            "application/manifest+json",
+        )
+
+    @app.get("/plan/icons/icon.svg", include_in_schema=False)
+    async def plan_icon() -> FileResponse:
+        return _webapp_file("plan", "icons/icon.svg", "image/svg+xml")
+
+    @app.get("/plan/styles.css", include_in_schema=False)
+    async def plan_styles() -> FileResponse:
+        return _webapp_file(
+            "plan",
+            "styles.css",
+            "text/css; charset=utf-8",
+            no_cache=True,
+        )
+
+    @app.get("/plan/app.js", include_in_schema=False)
+    async def plan_script() -> FileResponse:
+        return _webapp_file(
+            "plan",
+            "app.js",
+            "application/javascript",
+            no_cache=True,
+        )
+
+    @app.get("/plan/plan-sw.js", include_in_schema=False)
+    async def plan_service_worker() -> FileResponse:
+        return _webapp_file(
+            "plan",
+            "plan-sw.js",
+            "application/javascript",
+            no_cache=True,
+        )
+
+    @app.get(
+        "/api/plan/approved",
+        response_model=list[PlanApprovedSummaryResponse],
+    )
+    async def plan_approved(
+        request: Request,
+        response: Response,
+    ) -> list[PlanApprovedSummaryResponse]:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            records = await run_in_threadpool(service.list_plans)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        result: list[PlanApprovedSummaryResponse] = []
+        for record in records:
+            relative_path = record["path"].resolve().relative_to(
+                service.vault.resolve()
+            ).as_posix()
+            result.append(
+                PlanApprovedSummaryResponse(
+                    plan_id=record["plan_id"],
+                    cliente=record["cliente"],
+                    proyecto=record["proyecto"],
+                    estado=record["estado"],
+                    actualizado=record["actualizado"],
+                    relative_path=relative_path,
+                    obsidian_uri=_plan_obsidian_uri(
+                        service.vault,
+                        relative_path,
+                    ),
+                )
+            )
+        return result
+
+    @app.get(
+        "/api/plan/approved/{plan_id}",
+        response_model=PlanDraftResponse,
+    )
+    async def plan_approved_detail(
+        plan_id: str,
+        request: Request,
+        response: Response,
+    ) -> PlanDraftResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            path, plan = await run_in_threadpool(service.load_approved, plan_id)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        issues = validate_plan(plan)
+        relative_path = path.resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanDraftResponse(
+            plan_id=plan_id,
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+            plan=plan,
+            narrative="Plan publicado en la carpeta de aprobados.",
+            issues=[
+                PlanIssueResponse(
+                    level=issue.level,
+                    path=issue.path,
+                    message=issue.message,
+                )
+                for issue in issues
+            ],
+            approved_exists=True,
+        )
+
+    @app.get(
+        "/api/plan/clients",
+        response_model=list[PlanClientOption],
+    )
+    async def plan_clients(
+        request: Request,
+        response: Response,
+    ) -> list[PlanClientOption]:
+        response.headers["Cache-Control"] = "no-store"
+        service = _meeting_preparation_service(request)
+        try:
+            clients = await run_in_threadpool(service.list_clients)
+        except MeetingPreparationError as exc:
+            LOGGER.warning("Plan client listing failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo leer la carpeta de clientes de Obsidian.",
+            ) from exc
+        return [
+            PlanClientOption(
+                client_id=client.client_id,
+                name=client.name,
+                status=client.status,
+            )
+            for client in clients
+        ]
+
+    @app.get(
+        "/api/plan/context",
+        response_model=PlanClientSourcesResponse,
+    )
+    async def plan_client_context(
+        request: Request,
+        response: Response,
+        client_id: str = Query(min_length=1, max_length=160),
+        project_id: str | None = Query(default=None, max_length=32),
+    ) -> PlanClientSourcesResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            sources = await run_in_threadpool(
+                service.list_client_sources,
+                client_id,
+                project_id,
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        return PlanClientSourcesResponse(
+            projects=[
+                PlanSourceOption(**option) for option in sources["projects"]
+            ],
+            proposals=[
+                PlanSourceOption(**option) for option in sources["proposals"]
+            ],
+            meetings=[
+                PlanSourceOption(**option) for option in sources["meetings"]
+            ],
+            dossiers=[
+                PlanSourceOption(**option) for option in sources["dossiers"]
+            ],
+        )
+
+    @app.get(
+        "/api/plan/projects/{project_id}/sources",
+        response_model=ProjectHubSourceListResponse,
+    )
+    async def project_hub_sources(
+        project_id: str,
+        request: Request,
+        response: Response,
+        client_id: str = Query(min_length=1, max_length=160),
+    ) -> ProjectHubSourceListResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _project_hub_service(request)
+        try:
+            sources = await run_in_threadpool(
+                service.list_sources,
+                client_id,
+                project_id,
+            )
+        except ProjectHubError as exc:
+            raise _project_hub_http_error(exc, service.vault) from exc
+        return ProjectHubSourceListResponse(sources=sources)
+
+    @app.post(
+        "/api/plan/projects/{project_id}/panorama/preview",
+        response_model=ProjectPanoramaPreviewResponse,
+    )
+    async def project_hub_preview(
+        project_id: str,
+        payload: ProjectPanoramaPreviewRequest,
+        request: Request,
+        response: Response,
+    ) -> ProjectPanoramaPreviewResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _project_hub_service(request)
+        try:
+            preview = await run_in_threadpool(
+                service.preview,
+                payload.client_id,
+                project_id,
+                tuple(payload.source_ids),
+            )
+        except ProjectHubError as exc:
+            raise _project_hub_http_error(exc, service.vault) from exc
+        token = secrets.token_urlsafe(32)
+        preview = PanoramaPreview(**{**preview.__dict__, "token": token})
+        with request.app.state.project_hub_preview_lock:
+            previews = request.app.state.project_hub_previews
+            _prune_project_hub_previews(previews)
+            previews[token] = (time.monotonic(), preview)
+            while len(previews) > 16:
+                oldest = min(previews, key=lambda key: previews[key][0])
+                previews.pop(oldest, None)
+        return ProjectPanoramaPreviewResponse(
+            token=token,
+            project_id=preview.project_id,
+            source_paths=list(preview.source_paths),
+            diff=preview.diff,
+        )
+
+    @app.post(
+        "/api/plan/projects/{project_id}/panorama/confirm",
+        response_model=ProjectPanoramaConfirmResponse,
+    )
+    async def project_hub_confirm(
+        project_id: str,
+        payload: ProjectPanoramaConfirmRequest,
+        request: Request,
+        response: Response,
+    ) -> ProjectPanoramaConfirmResponse:
+        response.headers["Cache-Control"] = "no-store"
+        if not payload.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="La confirmación explícita es obligatoria.",
+            )
+        with request.app.state.project_hub_preview_lock:
+            cached = request.app.state.project_hub_previews.pop(
+                payload.token,
+                None,
+            )
+        if cached is None or time.monotonic() - cached[0] > 900:
+            raise HTTPException(
+                status_code=409,
+                detail="La vista previa expiró; genera un diff nuevo.",
+            )
+        preview = cached[1]
+        if preview.project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="El token no corresponde a este proyecto.",
+            )
+        service = _project_hub_service(request)
+        try:
+            relative_path = await run_in_threadpool(service.confirm, preview)
+        except ProjectHubError as exc:
+            raise _project_hub_http_error(exc, service.vault) from exc
+        return ProjectPanoramaConfirmResponse(
+            project_id=project_id,
+            message="Panorama actualizado; el resto de la nota no se modificó.",
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+        )
+
+    @app.get(
+        "/api/plan/drafts",
+        response_model=list[PlanDraftSummaryResponse],
+    )
+    async def plan_drafts(
+        request: Request,
+        response: Response,
+    ) -> list[PlanDraftSummaryResponse]:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            records = await run_in_threadpool(service.list_drafts)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        return [PlanDraftSummaryResponse(**record) for record in records]
+
+    @app.get(
+        "/api/plan/archived",
+        response_model=list[PlanArchivedSummaryResponse],
+    )
+    async def plan_archived(
+        request: Request,
+        response: Response,
+    ) -> list[PlanArchivedSummaryResponse]:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            records = await run_in_threadpool(service.list_archived_drafts)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        return [PlanArchivedSummaryResponse(**record) for record in records]
+
+    @app.get(
+        "/api/plan/drafts/{plan_id}",
+        response_model=PlanDraftResponse,
+    )
+    async def plan_draft(
+        plan_id: str,
+        request: Request,
+        response: Response,
+    ) -> PlanDraftResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            draft = await run_in_threadpool(service.read_draft, plan_id)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        try:
+            draft["path"].resolve(strict=True).relative_to(
+                service.drafts_dir.resolve(strict=True)
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="El borrador no está en la carpeta de revisión de Obsidian.",
+            ) from exc
+        plan = draft["plan"]
+        relative_path = draft["path"].resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanDraftResponse(
+            plan_id=plan_id,
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+            plan=plan,
+            narrative=draft["narrative"],
+            issues=[
+                PlanIssueResponse(
+                    level=issue.level,
+                    path=issue.path,
+                    message=issue.message,
+                )
+                for issue in draft["issues"]
+            ],
+            approved_exists=draft["approved_exists"],
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/cloud-improve/preview",
+        response_model=PlanCloudImprovementPreviewResponse,
+    )
+    async def plan_cloud_improvement_preview(
+        plan_id: str,
+        request: Request,
+        response: Response,
+    ) -> PlanCloudImprovementPreviewResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            draft = await run_in_threadpool(service.read_draft, plan_id)
+            draft["path"].resolve(strict=True).relative_to(
+                service.drafts_dir.resolve(strict=True)
+            )
+            preview = await run_in_threadpool(
+                service.preview_cloud_improvement,
+                plan_id,
+            )
+        except (PlanServiceError, OSError, ValueError) as exc:
+            if isinstance(exc, PlanServiceError):
+                raise _plan_http_error(exc, service.vault) from exc
+            raise HTTPException(
+                status_code=404,
+                detail="El plan no está en la carpeta de revisión de Obsidian.",
+            ) from exc
+
+        token = secrets.token_urlsafe(32)
+        _store_plan_cloud_state(
+            request,
+            token,
+            {"phase": "preview", "preview": preview},
+        )
+        return PlanCloudImprovementPreviewResponse(
+            token=token,
+            plan_id=preview.plan_id,
+            model=preview.request["model"],
+            request=preview.request,
+            request_sha256=preview.request_hash,
+            uncovered_deliverables=list(preview.gaps),
+            redaction_counts=preview.redaction_counts,
+            privacy_notice=(
+                "La vista previa muestra la solicitud Ollama completa. Se "
+                "sustituyen IDs y nombres conocidos, importes, teléfonos, "
+                "emails y URLs. La redacción automática no garantiza "
+                "anonimización: revisa también los detalles indirectamente "
+                "identificables. Nada se enviará hasta que confirmes."
+            ),
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/cloud-improve/generate",
+        response_model=PlanCloudImprovementGenerateResponse,
+    )
+    async def plan_cloud_improvement_generate(
+        plan_id: str,
+        payload: PlanCloudImprovementGenerateRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanCloudImprovementGenerateResponse:
+        response.headers["Cache-Control"] = "no-store"
+        entry = _get_plan_cloud_state(request, payload.token)
+        if (
+            entry is None
+            or entry.get("phase") != "preview"
+            or not isinstance(
+                entry.get("preview"),
+                CloudImprovementPreview,
+            )
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="La vista previa Cloud caducó o ya fue utilizada.",
+            )
+        preview = entry["preview"]
+        if preview.plan_id != plan_id:
+            raise HTTPException(
+                status_code=404,
+                detail="El token no corresponde a este plan.",
+            )
+        if not payload.confirm:
+            if not _change_plan_cloud_phase(
+                request,
+                payload.token,
+                expected="preview",
+                updated="cancelling",
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="La vista previa Cloud ya está siendo procesada.",
+                )
+            service = _plan_service(request)
+            try:
+                await run_in_threadpool(
+                    service.cancel_cloud_improvement,
+                    preview,
+                )
+            finally:
+                _remove_plan_cloud_state(request, payload.token)
+            return PlanCloudImprovementGenerateResponse(
+                token=payload.token,
+                plan_id=plan_id,
+                cancelled=True,
+            )
+        if not _change_plan_cloud_phase(
+            request,
+            payload.token,
+            expected="preview",
+            updated="generating",
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="La vista previa Cloud ya está siendo procesada.",
+            )
+
+        service = _plan_service(request)
+        try:
+            result = await run_in_threadpool(
+                service.generate_cloud_improvement,
+                preview,
+            )
+        except PlanServiceError as exc:
+            _remove_plan_cloud_state(request, payload.token)
+            raise _plan_http_error(exc, service.vault) from exc
+        except Exception:
+            _remove_plan_cloud_state(request, payload.token)
+            LOGGER.exception("Fallo no controlado al generar mejora Cloud")
+            raise HTTPException(
+                status_code=502,
+                detail="No se pudo completar la solicitud Cloud.",
+            ) from None
+
+        _replace_plan_cloud_state(
+            request,
+            payload.token,
+            {"phase": "result", "result": result},
+        )
+        return PlanCloudImprovementGenerateResponse(
+            token=payload.token,
+            plan_id=plan_id,
+            tasks=list(result.tasks),
+            constraints=list(result.constraints),
+            duplicate_count=result.duplicate_count,
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/cloud-improve/apply",
+        response_model=PlanCloudImprovementApplyResponse,
+    )
+    async def plan_cloud_improvement_apply(
+        plan_id: str,
+        payload: PlanCloudImprovementApplyRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanCloudImprovementApplyResponse:
+        response.headers["Cache-Control"] = "no-store"
+        entry = _get_plan_cloud_state(request, payload.token)
+        if (
+            entry is None
+            or entry.get("phase") != "result"
+            or not isinstance(entry.get("result"), CloudImprovementResult)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Las sugerencias Cloud caducaron o ya fueron aplicadas.",
+            )
+        result = entry["result"]
+        if result.preview.plan_id != plan_id:
+            raise HTTPException(
+                status_code=404,
+                detail="El token no corresponde a este plan.",
+            )
+        if not _change_plan_cloud_phase(
+            request,
+            payload.token,
+            expected="result",
+            updated="applying",
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Las sugerencias ya están siendo aplicadas.",
+            )
+
+        service = _plan_service(request)
+        try:
+            applied = await run_in_threadpool(
+                partial(
+                    service.apply_cloud_improvement,
+                    result,
+                    task_ids=payload.task_ids,
+                    constraint_ids=payload.constraint_ids,
+                )
+            )
+        except PlanServiceError as exc:
+            _replace_plan_cloud_state(
+                request,
+                payload.token,
+                {"phase": "result", "result": result},
+            )
+            raise _plan_http_error(exc, service.vault) from exc
+        except Exception:
+            _replace_plan_cloud_state(
+                request,
+                payload.token,
+                {"phase": "result", "result": result},
+            )
+            LOGGER.exception("Fallo no controlado al aplicar mejora Cloud")
+            raise HTTPException(
+                status_code=500,
+                detail="No se pudieron aplicar las sugerencias seleccionadas.",
+            ) from None
+
+        _remove_plan_cloud_state(request, payload.token)
+        relative_path = applied["relative_path"]
+        return PlanCloudImprovementApplyResponse(
+            plan_id=plan_id,
+            message="Se incorporaron solo las sugerencias seleccionadas.",
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+            accepted_tasks=len(payload.task_ids),
+            accepted_constraints=len(payload.constraint_ids),
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/cloud-improve/discard",
+        status_code=204,
+    )
+    async def plan_cloud_improvement_discard(
+        plan_id: str,
+        payload: PlanCloudImprovementDiscardRequest,
+        request: Request,
+        response: Response,
+    ) -> Response:
+        response.headers["Cache-Control"] = "no-store"
+        entry = _get_plan_cloud_state(request, payload.token)
+        result = entry.get("result") if entry else None
+        if (
+            entry is None
+            or entry.get("phase") != "result"
+            or not isinstance(result, CloudImprovementResult)
+            or result.preview.plan_id != plan_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Las sugerencias Cloud caducaron o ya fueron descartadas.",
+            )
+        if not _change_plan_cloud_phase(
+            request,
+            payload.token,
+            expected="result",
+            updated="discarding",
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Las sugerencias ya están siendo procesadas.",
+            )
+        service = _plan_service(request)
+        await run_in_threadpool(service.discard_cloud_improvement, result)
+        _remove_plan_cloud_state(request, payload.token)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+    @app.post(
+        "/api/plan/prepare",
+        response_model=PlanPrepareResponse,
+        status_code=201,
+    )
+    async def plan_prepare(
+        payload: PlanPrepareRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanPrepareResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            prepared = await run_in_threadpool(
+                partial(
+                    service.prepare,
+                    client=payload.client_id,
+                    project=payload.project_id or None,
+                    proposal=payload.proposal_id or None,
+                    proposals=payload.proposal_ids,
+                    meetings=payload.meeting_ids,
+                    dossiers=payload.dossier_ids,
+                    engine="local",
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        if isinstance(prepared, str):
+            raise HTTPException(
+                status_code=500,
+                detail="La generación devolvió una respuesta de previsualización "
+                "inesperada.",
+            )
+        relative_path = prepared.draft_path.resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanPrepareResponse(
+            plan_id=prepared.plan_id,
+            message="Borrador local creado.",
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+            source_paths=list(prepared.source_paths),
+            warnings=list(prepared.warnings),
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/preview-approval",
+        response_model=PlanApprovalPreviewResponse,
+    )
+    async def plan_preview_approval(
+        plan_id: str,
+        payload: PlanApprovalRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanApprovalPreviewResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            preview = await run_in_threadpool(
+                partial(
+                    service.approve,
+                    plan_id,
+                    confirm=True,
+                    update=payload.update,
+                    dry_run=True,
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        if isinstance(preview, str):
+            preview = preview.replace(
+                str(service.vault.resolve()),
+                "bóveda",
+            )
+        elif isinstance(preview, ApprovalResult) and preview.unchanged:
+            preview = "El plan aprobado coincide con el borrador; no hay cambios."
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="No se pudo preparar la previsualización del cambio.",
+            )
+        return PlanApprovalPreviewResponse(
+            plan_id=plan_id,
+            update=payload.update,
+            preview=preview,
+        )
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/approve",
+        response_model=PlanActionResponse,
+    )
+    async def plan_approve(
+        plan_id: str,
+        payload: PlanApprovalRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanActionResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            result = await run_in_threadpool(
+                partial(
+                    service.approve,
+                    plan_id,
+                    confirm=payload.confirm,
+                    update=payload.update,
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        if isinstance(result, str):
+            raise HTTPException(
+                status_code=500,
+                detail="La aprobación devolvió una previsualización inesperada.",
+            )
+        return _plan_action_response(result, service)
+
+    @app.post(
+        "/api/plan/drafts/{plan_id}/archive",
+        response_model=PlanActionResponse,
+    )
+    async def plan_archive_draft(
+        plan_id: str,
+        payload: PlanConfirmationRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanActionResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            destination = await run_in_threadpool(
+                partial(
+                    service.archive_draft,
+                    plan_id,
+                    confirm=payload.confirm,
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        relative_path = destination.resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanActionResponse(
+            plan_id=plan_id,
+            message=(
+                "Borrador cancelado/pospuesto; puedes restaurarlo desde "
+                "023 - PLANES_CANCELADOS."
+            ),
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+        )
+
+    @app.post(
+        "/api/plan/archived/{plan_id}/restore",
+        response_model=PlanActionResponse,
+    )
+    async def plan_restore_archived_draft(
+        plan_id: str,
+        payload: PlanConfirmationRequest,
+        request: Request,
+        response: Response,
+    ) -> PlanActionResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            destination = await run_in_threadpool(
+                partial(
+                    service.restore_archived_draft,
+                    plan_id,
+                    confirm=payload.confirm,
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        relative_path = destination.resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanActionResponse(
+            plan_id=plan_id,
+            message="Borrador restaurado a 022 - PLANES_BORRADOR.",
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+        )
+
+    @app.post(
+        "/api/plan/approved/{plan_id}/revise",
+        response_model=PlanPrepareResponse,
+        status_code=201,
+    )
+    async def plan_revise(
+        plan_id: str,
+        request: Request,
+        response: Response,
+    ) -> PlanPrepareResponse:
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            prepared = await run_in_threadpool(service.revise, plan_id)
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        relative_path = prepared.draft_path.resolve().relative_to(
+            service.vault.resolve()
+        ).as_posix()
+        return PlanPrepareResponse(
+            plan_id=prepared.plan_id,
+            message="Copia de revisión creada.",
+            relative_path=relative_path,
+            obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+            source_paths=list(prepared.source_paths),
         )
 
     @app.get(
@@ -515,10 +1569,230 @@ def _assets_root() -> Path:
 
 
 def _meeting_preparation_service(request: Request) -> MeetingPreparationService:
-    configured_root = request.app.state.obsidian_root or Path(
-        os.getenv("OBSIDIAN_VAULT", str(Path.home() / "Obsidian"))
-    ).expanduser()
-    return MeetingPreparationService(Path(configured_root))
+    return MeetingPreparationService(_configured_vault_root(request))
+
+
+def _plan_service(request: Request) -> PlanService:
+    return PlanService(_configured_vault_root(request))
+
+
+def _clean_plan_cloud_states(request: Request) -> None:
+    now = time.monotonic()
+    states = request.app.state.plan_cloud_improvements
+    expired = [
+        token
+        for token, state in states.items()
+        if state.get("expires_at", 0) <= now
+    ]
+    for token in expired:
+        states.pop(token, None)
+    while len(states) > 16:
+        oldest = min(
+            states,
+            key=lambda token: states[token].get("created_at", 0),
+        )
+        states.pop(oldest, None)
+
+
+def _store_plan_cloud_state(
+    request: Request,
+    token: str,
+    state: dict[str, Any],
+) -> None:
+    with request.app.state.plan_cloud_improvement_lock:
+        states = request.app.state.plan_cloud_improvements
+        _clean_plan_cloud_states(request)
+        states[token] = {
+            **state,
+            "created_at": time.monotonic(),
+            "expires_at": time.monotonic() + 900,
+        }
+        _clean_plan_cloud_states(request)
+
+
+def _get_plan_cloud_state(
+    request: Request,
+    token: str,
+) -> dict[str, Any] | None:
+    with request.app.state.plan_cloud_improvement_lock:
+        _clean_plan_cloud_states(request)
+        state = request.app.state.plan_cloud_improvements.get(token)
+        return dict(state) if state is not None else None
+
+
+def _change_plan_cloud_phase(
+    request: Request,
+    token: str,
+    *,
+    expected: str,
+    updated: str,
+) -> bool:
+    with request.app.state.plan_cloud_improvement_lock:
+        _clean_plan_cloud_states(request)
+        state = request.app.state.plan_cloud_improvements.get(token)
+        if state is None or state.get("phase") != expected:
+            return False
+        state["phase"] = updated
+        state["expires_at"] = time.monotonic() + 900
+        return True
+
+
+def _replace_plan_cloud_state(
+    request: Request,
+    token: str,
+    state: dict[str, Any],
+) -> None:
+    with request.app.state.plan_cloud_improvement_lock:
+        states = request.app.state.plan_cloud_improvements
+        if token not in states:
+            return
+        created_at = states[token].get("created_at", time.monotonic())
+        states[token] = {
+            **state,
+            "created_at": created_at,
+            "expires_at": time.monotonic() + 900,
+        }
+
+
+def _remove_plan_cloud_state(request: Request, token: str) -> None:
+    with request.app.state.plan_cloud_improvement_lock:
+        request.app.state.plan_cloud_improvements.pop(token, None)
+
+
+def _project_hub_service(request: Request) -> ProjectHubService:
+    def model_call(system_prompt: str, user_prompt: str, cloud: bool) -> str:
+        if cloud:
+            raise PlanServiceError(
+                "El panorama del proyecto solo admite generación local.",
+                2,
+            )
+        model = cfg.PLAN_LOCAL_MODEL
+        if not model:
+            raise PlanServiceError("No hay modelo local configurado.", 2)
+        client = _make_ollama_client(
+            request.app.state.ollama_client_factory,
+        )
+        try:
+            result = client.chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                format="json",
+                keep_alive=cfg.OLLAMA_KEEP_ALIVE,
+                options=cfg.plan_ollama_options(),
+            )
+        except (ollama.RequestError, ollama.ResponseError) as exc:
+            raise PlanServiceError(
+                f"Ollama no pudo actualizar el panorama "
+                f"({type(exc).__name__}).",
+                2,
+            ) from exc
+        message = (
+            result.get("message")
+            if isinstance(result, dict)
+            else getattr(result, "message", None)
+        )
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if not isinstance(content, str) or not content.strip():
+            raise PlanServiceError(
+                "Ollama devolvió un panorama vacío.",
+                2,
+            )
+        return content
+
+    return ProjectHubService(
+        _configured_vault_root(request),
+        model_call=model_call,
+    )
+
+
+def _configured_vault_root(request: Request) -> Path:
+    configured_root = request.app.state.obsidian_root or os.getenv(
+        "OBSIDIAN_VAULT",
+        str(cfg.OBSIDIAN_VAULT),
+    )
+    return Path(configured_root).expanduser()
+
+
+def _plan_http_error(
+    error: PlanServiceError,
+    vault: Path | None = None,
+) -> HTTPException:
+    detail = str(error)
+    if vault is not None:
+        detail = detail.replace(str(vault), "la bóveda")
+        try:
+            detail = detail.replace(str(vault.resolve()), "la bóveda")
+        except OSError:
+            pass
+    status_code = {1: 422, 2: 503, 3: 409}.get(error.exit_code, 500)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _project_hub_http_error(
+    error: ProjectHubError,
+    vault: Path | None = None,
+) -> HTTPException:
+    detail = str(error)
+    if vault is not None:
+        detail = detail.replace(str(vault), "la bóveda")
+        try:
+            detail = detail.replace(str(vault.resolve()), "la bóveda")
+        except OSError:
+            pass
+    status_code = {1: 422, 2: 503, 3: 409}.get(error.exit_code, 500)
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _prune_project_hub_previews(
+    previews: dict[str, tuple[float, PanoramaPreview]],
+) -> None:
+    expired = [
+        token
+        for token, (created_at, _) in previews.items()
+        if time.monotonic() - created_at > 900
+    ]
+    for token in expired:
+        previews.pop(token, None)
+
+
+def _plan_obsidian_uri(vault: Path, relative_path: str) -> str:
+    absolute_note_path = (vault.expanduser() / relative_path).resolve()
+    query = urlencode(
+        {"path": str(absolute_note_path)},
+        quote_via=quote,
+        safe="",
+    )
+    return f"obsidian://open?{query}"
+
+
+def _plan_action_response(
+    result: ApprovalResult,
+    service: PlanService,
+) -> PlanActionResponse:
+    relative_path = result.destination.resolve().relative_to(
+        service.vault.resolve()
+    ).as_posix()
+    return PlanActionResponse(
+        plan_id=result.plan_id,
+        message=(
+            "Plan actualizado."
+            if result.updated
+            else "El plan ya estaba aprobado sin cambios."
+            if result.unchanged
+            else "Plan aprobado."
+        ),
+        relative_path=relative_path,
+        obsidian_uri=_plan_obsidian_uri(service.vault, relative_path),
+        updated=result.updated,
+        unchanged=result.unchanged,
+    )
 
 
 def _meeting_client_option(
@@ -1180,6 +2454,7 @@ def _asset_path(root: Path, application: str) -> Path:
         "soma": root / "soma" / "somaguard.html",
         "ghostwriter": root / "ghostwriter" / "ghostwriter_ai_studio.html",
         "meetings": root / "meetings" / "index.html",
+        "plan": root / "plan" / "index.html",
     }
     try:
         return asset_paths[application]

@@ -1,0 +1,27 @@
+{
+  "id": "/plan/",
+  "name": "BlackBelt Plan",
+  "short_name": "Plan",
+  "description": "Revisión local de planes de proyecto en Obsidian.",
+  "start_url": "/plan/",
+  "scope": "/plan/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "prefer_related_applications": false,
+  "background_color": "#0b1220",
+  "theme_color": "#101a2a",
+  "icons": [
+    {
+      "src": "/plan/icons/icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/plan/icons/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
