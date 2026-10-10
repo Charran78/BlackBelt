@@ -19,6 +19,15 @@ _MAX_CHUNK_CHARS = 1200
 _CHUNK_OVERLAP_CHARS = 160
 _HEADING_PATTERN = re.compile(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _SETEXT_HEADING_PATTERN = re.compile(r"^ {0,3}(=+|-+)\s*$")
+_AUXILIARY_THINKING_PATTERN = re.compile(
+    r"^ {0,3}>[ \t]*\*\*(?:Thinking:|Thinking steps)\*\*[ \t]*$",
+    re.IGNORECASE,
+)
+_CONVERSATION_TURN_PATTERN = re.compile(
+    r"^ {0,3}#{1,6}[ \t]+(?:Usuario|Asistente|User|Assistant|Gemini|"
+    r"DeepSeek|ChatGPT|Claude|Modelo)[ \t]*:",
+    re.IGNORECASE,
+)
 _OBSIDIAN_IMAGE_PATTERN = re.compile(r"!\[\[[^\]]+\]\]")
 _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _WIKILINK_PATTERN = re.compile(r"(?<!!)\[\[([^\]]+)\]\]")
@@ -92,9 +101,15 @@ class _Paragraph:
     section_titles: tuple[str, ...]
     char_start: int
     char_end: int
+    break_before: bool = False
 
 
-def parse_markdown_source(path: str, content: str) -> SourceDocument:
+def parse_markdown_source(
+    path: str,
+    content: str,
+    *,
+    exclude_thinking_blocks: bool = False,
+) -> SourceDocument:
     """Parse a Markdown source while preserving offsets into the original file."""
     normalized_path = PurePosixPath(path).as_posix()
     source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -102,7 +117,11 @@ def parse_markdown_source(path: str, content: str) -> SourceDocument:
     frontmatter, body_start, warning = _parse_frontmatter(content)
     body = content[body_start:]
     title = _source_title(frontmatter, body, normalized_path)
-    paragraphs = _extract_paragraphs(body, body_start)
+    paragraphs = _extract_paragraphs(
+        body,
+        body_start,
+        exclude_thinking_blocks=exclude_thinking_blocks,
+    )
     chunks = _build_chunks(
         source_id=source_id,
         source_hash=source_hash,
@@ -197,7 +216,12 @@ def _source_title(
     return PurePosixPath(path).stem
 
 
-def _extract_paragraphs(body: str, body_start: int) -> list[_Paragraph]:
+def _extract_paragraphs(
+    body: str,
+    body_start: int,
+    *,
+    exclude_thinking_blocks: bool,
+) -> list[_Paragraph]:
     paragraphs: list[_Paragraph] = []
     heading_stack: list[tuple[int, str]] = []
     paragraph_lines: list[str] = []
@@ -206,9 +230,11 @@ def _extract_paragraphs(body: str, body_start: int) -> list[_Paragraph]:
     paragraph_section: tuple[str, ...] = ()
     offset = body_start
     fence_marker: str | None = None
+    skipping_thinking_block = False
+    break_before_next_paragraph = False
 
     def flush_paragraph() -> None:
-        nonlocal paragraph_lines
+        nonlocal break_before_next_paragraph, paragraph_lines
         if paragraph_lines:
             paragraphs.append(
                 _Paragraph(
@@ -216,13 +242,19 @@ def _extract_paragraphs(body: str, body_start: int) -> list[_Paragraph]:
                     section_titles=paragraph_section,
                     char_start=paragraph_start,
                     char_end=paragraph_end,
+                    break_before=break_before_next_paragraph,
                 )
             )
             paragraph_lines = []
+            break_before_next_paragraph = False
 
     for line in body.splitlines(keepends=True):
         line_content = line.rstrip("\r\n")
         stripped = line_content.lstrip()
+        if exclude_thinking_blocks and _CONVERSATION_TURN_PATTERN.match(line_content):
+            flush_paragraph()
+            fence_marker = None
+            skipping_thinking_block = False
         fence_match = re.match(r"(```+|~~~+)", stripped)
         if fence_match:
             marker = fence_match.group(1)
@@ -237,6 +269,25 @@ def _extract_paragraphs(body: str, body_start: int) -> list[_Paragraph]:
             paragraph_lines.append(line)
             offset += len(line)
             continue
+
+        if (
+            exclude_thinking_blocks
+            and fence_marker is None
+            and _AUXILIARY_THINKING_PATTERN.match(line_content)
+        ):
+            flush_paragraph()
+            paragraph_start = offset + len(line)
+            paragraph_end = paragraph_start
+            skipping_thinking_block = True
+            break_before_next_paragraph = True
+            offset += len(line)
+            continue
+
+        if skipping_thinking_block:
+            if line_content.lstrip().startswith(">") or not line_content.strip():
+                offset += len(line)
+                continue
+            skipping_thinking_block = False
 
         heading_match = _HEADING_PATTERN.match(line_content)
         if fence_marker is None and heading_match:
@@ -328,7 +379,8 @@ def _build_chunks(
             continue
 
         if pending and (
-            pending[0].section_titles != paragraph.section_titles
+            paragraph.break_before
+            or pending[0].section_titles != paragraph.section_titles
             or pending_size + len(paragraph.content) > _MAX_CHUNK_CHARS
         ):
             flush_pending()

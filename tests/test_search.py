@@ -69,6 +69,110 @@ def _service(
     )
 
 
+def test_index_checkpoints_each_note_and_resumes_after_embedding_failure(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    for index in range(3):
+        _write_note(
+            vault,
+            f"024 - CHAT_BD/Conversation {index}.md",
+            f"# Conversación {index}\n\nContenido del turno {index}.",
+        )
+
+    class FailOnSecondBatch:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.should_fail = True
+
+        def embed(self, texts: Sequence[str]) -> list[list[float]]:
+            self.calls += 1
+            if self.should_fail and self.calls == 2:
+                raise SemanticSearchError("fallo simulado de Ollama")
+            return [[1.0, 0.0, 0.0] for _ in texts]
+
+    embedder = FailOnSecondBatch()
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=embedder,
+        include_dirs=("024 - CHAT_BD",),
+        embedding_batch_size=4,
+    )
+
+    with pytest.raises(SemanticSearchError, match="fallo simulado"):
+        service.index(batch_size=2)
+
+    with closing(service._open_database()) as database:
+        checkpointed = database.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+    assert checkpointed == 1
+
+    embedder.should_fail = False
+    resumed = service.index(batch_size=2)
+
+    assert resumed.indexed == 2
+    assert resumed.unchanged == 1
+
+
+def test_index_reports_scan_batches_and_cooldown_without_long_sleep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vault = tmp_path / "vault"
+    _write_note(
+        vault,
+        "024 - CHAT_BD/Conversación extensa.md",
+        "# Conversación extensa\n\n" + ("Fragmento de conversación. " * 120),
+    )
+    clock = [0.0]
+
+    class AdvancingEmbedder(DeterministicEmbedder):
+        def embed(self, texts: Sequence[str]) -> list[list[float]]:
+            clock[0] += 1.0
+            return super().embed(texts)
+
+    embedder = AdvancingEmbedder()
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=embedder,
+        include_dirs=("024 - CHAT_BD",),
+        embedding_batch_size=1,
+    )
+    events: list[semantic_search.SearchIndexProgress] = []
+    source_counts_during_cooldown: list[int] = []
+
+    def fake_sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    def collect_progress(event: semantic_search.SearchIndexProgress) -> None:
+        events.append(event)
+        if event.stage == "cooldown":
+            with closing(service._open_database()) as database:
+                source_counts_during_cooldown.append(
+                    database.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+                )
+
+    monkeypatch.setattr(semantic_search.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(semantic_search.time, "sleep", fake_sleep)
+
+    stats = service.index(
+        batch_size=1,
+        work_interval_seconds=1,
+        cooldown_seconds=2,
+        progress_callback=collect_progress,
+    )
+
+    cooldown_events = [event for event in events if event.stage == "cooldown"]
+    assert stats.indexed == 1
+    assert len(cooldown_events) >= 3
+    assert set(source_counts_during_cooldown) == {0}
+    assert any(event.stage == "scan" and event.total == 1 for event in events)
+    assert [event for event in events if event.stage == "complete"]
+
+
 def test_index_is_incremental_excludes_templates_and_credentials_and_searches_hybrid(
     tmp_path: Path,
 ) -> None:
@@ -149,6 +253,143 @@ Proyecto relacionado: [[001 - PROYECTOS/Proyecto Aura|Aura]].
     updated = service.index()
     assert updated.indexed == 1
     assert service.search("celebración de una boda") == []
+
+
+def test_index_supports_scoped_memory_directories_and_larger_conversations(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    large_note = (
+        "# Conversación extensa\n\n"
+        "## Usuario\n\nBusco un compañero narrativo con memoria documental.\n\n"
+        + (" " * (2 * 1024 * 1024))
+    )
+    _write_note(vault, "024 - CHAT_BD/Gemini idea privada.md", large_note)
+    _write_note(
+        vault,
+        "025 - MIS_NOTAS/Preferencias.md",
+        "# Preferencias\n\nQuiero respuestas con fuentes verificables.\n",
+    )
+    _write_note(
+        vault,
+        "999 - DIARIO/Privado.md",
+        "# Diario\n\nSECRETO-FUERA-DEL-ALCANCE",
+    )
+    _write_note(
+        vault,
+        "001 - PROYECTOS/Proyecto.md",
+        "# Proyecto\n\nOTRO-CONTENIDO-FUERA-DEL-ALCANCE",
+    )
+    embedder = DeterministicEmbedder()
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "isolated-index",
+        model="test-embedding-model",
+        embedder=embedder,
+        include_dirs=("024 - CHAT_BD", "025 - MIS_NOTAS"),
+        max_note_bytes=16 * 1024 * 1024,
+    )
+
+    stats = service.index()
+
+    assert stats.scanned == 2
+    assert stats.indexed == 2
+    assert not stats.warnings
+    assert service.search("compañero narrativo")
+    embedded_text = "\n".join(text for batch in embedder.batches for text in batch)
+    assert "SECRETO-FUERA-DEL-ALCANCE" not in embedded_text
+    assert "OTRO-CONTENIDO-FUERA-DEL-ALCANCE" not in embedded_text
+
+
+def test_scoped_index_fails_closed_when_an_included_directory_is_missing(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _write_note(vault, "024 - CHAT_BD/Conversation.md", "# Contexto\n\nMemoria.")
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "isolated-index",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+        include_dirs=("024 - CHAT_BD", "025 - MIS_NOTAS"),
+        max_note_bytes=16 * 1024 * 1024,
+    )
+
+    with pytest.raises(SemanticSearchError, match="no se ha modificado"):
+        service.index()
+
+    assert not (tmp_path / "isolated-index").exists()
+
+
+def test_full_source_read_requires_current_hash_and_included_path(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    note = _write_note(
+        vault,
+        "024 - CHAT_BD/Conversation.md",
+        "# Historia\n\nLa idea aparece en la conversación.",
+    )
+    _write_note(vault, "999 - DIARIO/Private.md", "# Diario\n\nPrivado.")
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+        include_dirs=("024 - CHAT_BD",),
+        max_note_bytes=16 * 1024 * 1024,
+    )
+    service.index()
+
+    source = service.read_indexed_source("024 - CHAT_BD/Conversation.md")
+    assert source.content == note.read_text(encoding="utf-8")
+    with pytest.raises(SemanticSearchError, match="fuera del alcance"):
+        service.read_indexed_source("999 - DIARIO/Private.md")
+
+    note.write_text("# Historia\n\nEditada después del índice.", encoding="utf-8")
+    with pytest.raises(SemanticSearchError, match="cambió desde la indexación"):
+        service.read_indexed_source("024 - CHAT_BD/Conversation.md")
+
+
+def test_note_that_grows_past_size_limit_is_removed_from_index(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    note = _write_note(
+        vault, "024 - CHAT_BD/Conversation.md", "# Historia\n\nIdea histórica."
+    )
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+        max_note_bytes=1024,
+    )
+
+    assert service.index().indexed == 1
+    assert service.search("idea histórica")
+
+    note.write_text(
+        "# Historia\n\nIdea histórica.\n" + ("contenido " * 200),
+        encoding="utf-8",
+    )
+    updated = service.index()
+
+    assert updated.removed == 1
+    assert service.search("idea histórica") == []
+
+
+def test_scoped_index_rejects_absolute_and_parent_paths(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="ruta relativa"):
+        SemanticSearchService(
+            tmp_path,
+            tmp_path / "index",
+            include_dirs=("../outside",),
+        )
+    with pytest.raises(ValueError, match="ruta relativa"):
+        SemanticSearchService(
+            tmp_path,
+            tmp_path / "index",
+            include_dirs=("C:/private",),
+        )
 
 
 def test_reindex_removes_newly_excluded_directories_from_older_index(
@@ -415,6 +656,99 @@ def test_best_candidate_prefers_query_matches_over_higher_rank_noise() -> None:
     assert selected["001 - PROYECTOS/Aura.md"] is specific
 
 
+def test_best_candidate_uses_matching_section_without_ignoring_body_evidence() -> None:
+    previous_passage = semantic_search._SearchCandidate(
+        path="024 - CHAT_BD/AndroidAlonia.md",
+        title="AndroidAlonia",
+        content="Kotlin tiene tres caminos de aprendizaje.",
+        wikilinks=(),
+        content_match_count=3,
+        section_match_count=0,
+        meaningful_term_count=7,
+        score=0.04,
+    )
+    titled_answer = semantic_search._SearchCandidate(
+        path="024 - CHAT_BD/AndroidAlonia.md",
+        title="AndroidAlonia",
+        content="Kotlin: Hyperskill, Kotlinlang.org y Android Developers.",
+        wikilinks=(),
+        content_match_count=1,
+        section_match_count=3,
+        meaningful_term_count=8,
+        score=0.02,
+    )
+    generic_heading = semantic_search._SearchCandidate(
+        path="024 - CHAT_BD/AndroidAlonia.md",
+        title="AndroidAlonia",
+        content="Un fragmento sin evidencia sobre la pregunta.",
+        wikilinks=(),
+        content_match_count=0,
+        section_match_count=4,
+        meaningful_term_count=8,
+        score=0.08,
+    )
+
+    selected = semantic_search._best_candidate_by_path(
+        [previous_passage, generic_heading, titled_answer]
+    )
+
+    assert selected["024 - CHAT_BD/AndroidAlonia.md"] is titled_answer
+
+
+def test_search_prefers_exact_matching_section_within_a_conversation(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    _write_note(
+        vault,
+        "024 - CHAT_BD/AndroidAlonia.md",
+        """# AndroidAlonia
+
+## Asistente:
+
+### La Batalla Contra el Dragón
+
+Kotlin tiene tres caminos de aprendizaje y muchos recursos distintos.
+
+### Los Tres Pilares del Aprendizaje
+
+Kotlin: Hyperskill.org, Kotlinlang.org y Android Developers.
+
+### Kotlin
+
+Un relato creativo sin información concreta para responder.
+""",
+    )
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+        include_dirs=("024 - CHAT_BD",),
+    )
+    service.index()
+
+    progress_updates: list[str] = []
+    results = service.search(
+        "en kotlin, cuales son Los Tres Pilares del Aprendizaje?",
+        limit=3,
+        progress_callback=progress_updates.append,
+    )
+
+    assert results
+    assert results[0].provenance is not None
+    assert results[0].provenance.section_titles[-1] == (
+        "Los Tres Pilares del Aprendizaje"
+    )
+    assert "Hyperskill.org" in results[0].content
+    assert progress_updates == [
+        "Buscando coincidencias léxicas en SQLite (BM25)...",
+        "Calculando el embedding local de la consulta...",
+        "Buscando pasajes cercanos en Qdrant local...",
+        "Fusionando resultados y validando su procedencia...",
+    ]
+
+
 def test_lexical_search_ignores_stop_words(tmp_path: Path) -> None:
     vault = tmp_path / "vault"
     _write_note(
@@ -499,6 +833,150 @@ def test_source_parser_preserves_frontmatter_section_and_exact_offsets() -> None
     assert 0 <= chapter.char_start < chapter.char_end <= len(content)
     assert chapter.chunk_hash
     assert source.source_hash
+
+
+def test_source_parser_can_exclude_thinking_without_losing_original_offsets() -> None:
+    content = (
+        "# Conversación\n\n"
+        "## Usuario:\n\n"
+        "El ejemplo siguiente dejó una cerca Markdown sin cerrar.\n\n"
+        "```python\nprint('muestra')\n\n"
+        "## Asistente: 2025-01-01\n\n"
+        "> **Thinking:**\n"
+        "> INTERNAL-CHAIN-OF-THOUGHT\n"
+        ">\n"
+        "> More private reasoning.\n\n"
+        "Respuesta visible y verificable.\n"
+        "\n"
+        "## Gemini:\n\n"
+        "> **Thinking steps**\n"
+        ">\n"
+        "> GEMINI-INTERNAL-REASONING\n\n"
+        "Respuesta Gemini visible y verificable.\n"
+    )
+
+    original = parse_markdown_source("024 - CHAT_BD/Test.md", content)
+    normalized = parse_markdown_source(
+        "024 - CHAT_BD/Test.md",
+        content,
+        exclude_thinking_blocks=True,
+    )
+
+    assert any(
+        "INTERNAL-CHAIN-OF-THOUGHT" in chunk.content for chunk in original.chunks
+    )
+    assert all(
+        "INTERNAL-CHAIN-OF-THOUGHT" not in chunk.content
+        and "GEMINI-INTERNAL-REASONING" not in chunk.content
+        for chunk in normalized.chunks
+    )
+    response = next(
+        chunk for chunk in normalized.chunks if "Respuesta visible" in chunk.content
+    )
+    assert response.section_titles == ("Conversación", "Asistente: 2025-01-01")
+    assert (
+        "Respuesta visible y verificable."
+        in content[response.char_start : response.char_end]
+    )
+    assert (
+        "INTERNAL-CHAIN-OF-THOUGHT"
+        not in content[response.char_start : response.char_end]
+    )
+    gemini_response = next(
+        chunk
+        for chunk in normalized.chunks
+        if "Respuesta Gemini visible" in chunk.content
+    )
+    assert (
+        "GEMINI-INTERNAL-REASONING"
+        not in content[gemini_response.char_start : gemini_response.char_end]
+    )
+    assert normalized.source_hash == original.source_hash
+
+
+def test_companion_index_excludes_thinking_but_keeps_source_provenance(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    vault = tmp_path / "vault"
+    relative_path = "024 - CHAT_BD/Thinking.md"
+    content = (
+        "# Conversación\n\n"
+        "## Usuario:\n\n"
+        "Ejemplo de código exportado.\n\n"
+        "```python\nprint('sin cierre')\n\n"
+        "## Asistente: 2025-01-01\n\n"
+        "> **Thinking:**\n"
+        "> TOKEN-DE-RAZONAMIENTO-PRIVADO\n"
+        ">\n"
+        "> Otro detalle interno.\n\n"
+        "La respuesta pública menciona la decisión de usar Python.\n"
+        "\n"
+        "## Gemini:\n\n"
+        "> **Thinking steps**\n"
+        ">\n"
+        "> GEMINI-RAZONAMIENTO-PRIVADO\n\n"
+        "La respuesta de Gemini propone una arquitectura modular.\n"
+    )
+    note_path = _write_note(vault, relative_path, content)
+    personal_content = (
+        "# Nota personal\n\n"
+        "> **Thinking:**\n"
+        "> Este texto citado no pertenece a una exportación de chat.\n"
+    )
+    personal_path = _write_note(
+        vault,
+        "025 - MIS_NOTAS/Thinking.md",
+        personal_content,
+    )
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "companion-index",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+        include_dirs=("024 - CHAT_BD", "025 - MIS_NOTAS"),
+        thinking_filter_dirs=("024 - CHAT_BD",),
+    )
+
+    stats = service.index()
+
+    assert stats.indexed == 2
+    with closing(service._open_database()) as database:
+        source_hash = database.execute(
+            "SELECT source_hash FROM sources WHERE path = ?",
+            (relative_path,),
+        ).fetchone()[0]
+        chunks = database.execute(
+            "SELECT content, char_start, char_end FROM chunks "
+            "JOIN sources USING(source_id) WHERE sources.path = ? "
+            "ORDER BY chunk_index",
+            (relative_path,),
+        ).fetchall()
+        personal_chunk = database.execute(
+            "SELECT content FROM chunks JOIN sources USING(source_id) "
+            "WHERE sources.path = ?",
+            ("025 - MIS_NOTAS/Thinking.md",),
+        ).fetchone()[0]
+    assert source_hash == hashlib.sha256(content.encode("utf-8")).hexdigest()
+    assert all(
+        "TOKEN-DE-RAZONAMIENTO-PRIVADO" not in chunk[0]
+        and "GEMINI-RAZONAMIENTO-PRIVADO" not in chunk[0]
+        for chunk in chunks
+    )
+    response = next(chunk for chunk in chunks if "decisión de usar Python" in chunk[0])
+    assert "decisión de usar Python" in content[response[1] : response[2]]
+    assert "TOKEN-DE-RAZONAMIENTO-PRIVADO" not in content[response[1] : response[2]]
+    gemini_response = next(
+        chunk for chunk in chunks if "arquitectura modular" in chunk[0]
+    )
+    assert (
+        "GEMINI-RAZONAMIENTO-PRIVADO"
+        not in content[gemini_response[1] : gemini_response[2]]
+    )
+    assert "Thinking" in personal_chunk
+    assert note_path.read_text(encoding="utf-8") == content
+    assert personal_path.read_text(encoding="utf-8") == personal_content
 
 
 def test_frontmatter_and_section_are_searchable_and_citable(
@@ -799,7 +1277,34 @@ def test_ollama_embedding_retries_local_connection_once(
     assert vectors == [[0.25, 0.75]]
     assert len(requests) == 2
     assert all(request["keep_alive"] == "0" for request in requests)
+    assert all(request["options"] is None for request in requests)
     assert client_options["trust_env"] is False
+
+
+def test_ollama_embedding_can_retain_model_between_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, object]] = []
+
+    class RecordingClient:
+        def __init__(self, **options: object) -> None:
+            pass
+
+        def embed(self, **options: object) -> object:
+            requests.append(options)
+            return type("EmbeddingResponse", (), {"embeddings": [[0.5]]})()
+
+    monkeypatch.setattr(semantic_search.ollama, "Client", RecordingClient)
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+
+    OllamaEmbeddingProvider(
+        "nomic-embed-text",
+        keep_alive="2m",
+        num_thread=2,
+    ).embed(["fragmento local"])
+
+    assert requests[0]["keep_alive"] == "2m"
+    assert requests[0]["options"] == {"num_thread": 2}
 
 
 def test_index_directory_cannot_overlap_obsidian_vault(

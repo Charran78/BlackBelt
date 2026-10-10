@@ -11,10 +11,10 @@ import sqlite3
 import time
 import unicodedata
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -31,7 +31,7 @@ from blackbelt.knowledge.provenance import (
 )
 
 _COLLECTION_NAME = "obsidian_notes"
-_INDEX_SCHEMA_VERSION = 2
+_INDEX_SCHEMA_VERSION = 3
 _MAX_NOTE_BYTES = 2 * 1024 * 1024
 _EMBED_BATCH_SIZE = 16
 _SEARCH_CANDIDATE_MULTIPLIER = 8
@@ -219,6 +219,92 @@ class SearchIndexStats:
 
 
 @dataclass(frozen=True)
+class SearchIndexProgress:
+    """Progress event emitted while scanning or checkpointing index batches."""
+
+    stage: Literal["scan", "embed", "cooldown", "cleanup", "complete"]
+    current: int
+    total: int
+    detail: str
+    indexed: int = 0
+    unchanged: int = 0
+    chunks_completed: int = 0
+    chunks_total: int = 0
+    batch_index: int = 0
+    batch_count: int = 0
+
+
+class _IndexPacer:
+    """Insert a cooldown between embedding requests after a work interval."""
+
+    def __init__(
+        self,
+        *,
+        work_interval_seconds: float,
+        cooldown_seconds: float,
+        progress_callback: Callable[[SearchIndexProgress], None] | None,
+    ) -> None:
+        self._work_interval_seconds = work_interval_seconds
+        self._cooldown_seconds = cooldown_seconds
+        self._progress_callback = progress_callback
+        self._work_started = time.monotonic()
+        self._worked_seconds = 0.0
+
+    def after_embedding_batch(
+        self,
+        *,
+        batch_index: int,
+        batch_count: int,
+        source_path: str,
+        chunks_completed: int,
+        chunks_total: int,
+        indexed: int,
+        unchanged: int,
+    ) -> None:
+        now = time.monotonic()
+        self._worked_seconds += now - self._work_started
+        self._work_started = now
+        if (
+            self._work_interval_seconds <= 0
+            or self._worked_seconds < self._work_interval_seconds
+        ):
+            return
+
+        self._worked_seconds = 0.0
+        if self._cooldown_seconds <= 0:
+            return
+
+        deadline = now + self._cooldown_seconds
+        while True:
+            remaining = max(0.0, deadline - time.monotonic())
+            SemanticSearchService._notify_index_progress(
+                self._progress_callback,
+                SearchIndexProgress(
+                    stage="cooldown",
+                    current=max(
+                        0,
+                        math.ceil(self._cooldown_seconds - remaining),
+                    ),
+                    total=math.ceil(self._cooldown_seconds),
+                    detail=(
+                        f"Descanso tras {source_path} · "
+                        f"{math.ceil(remaining)} s restantes"
+                    ),
+                    indexed=indexed,
+                    unchanged=unchanged,
+                    chunks_completed=chunks_completed,
+                    chunks_total=chunks_total,
+                    batch_index=batch_index,
+                    batch_count=batch_count,
+                ),
+            )
+            if remaining <= 0:
+                break
+            time.sleep(min(1.0, remaining))
+        self._work_started = time.monotonic()
+
+
+@dataclass(frozen=True)
 class SearchHit:
     """A fused search result with auditable Obsidian source metadata."""
 
@@ -230,6 +316,16 @@ class SearchHit:
     semantic_rank: int | None
     lexical_rank: int | None
     provenance: SourceProvenance | None = None
+
+
+@dataclass(frozen=True)
+class IndexedSource:
+    """Full source text after validating its indexed hash and allowed path."""
+
+    path: str
+    title: str
+    source_hash: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -294,6 +390,7 @@ class _SearchCandidate:
     content: str
     wikilinks: tuple[str, ...]
     content_match_count: int
+    section_match_count: int = 0
     provenance: SourceProvenance | None = None
     meaningful_term_count: int = 0
     score: float = 0.0
@@ -309,8 +406,12 @@ class OllamaEmbeddingProvider:
         model: str,
         *,
         timeout: int = 180,
+        keep_alive: str | int = "0",
+        num_thread: int | None = None,
     ) -> None:
         self._model = model
+        self._keep_alive = keep_alive
+        self._options = {"num_thread": num_thread} if num_thread is not None else None
         host = os.getenv("OLLAMA_HOST", "").strip()
         if host and not _is_loopback_ollama_host(host):
             raise SemanticSearchError(
@@ -331,7 +432,8 @@ class OllamaEmbeddingProvider:
             response = self._client.embed(
                 model=self._model,
                 input=list(texts),
-                keep_alive="0",
+                keep_alive=self._keep_alive,
+                options=self._options,
             )
         except (httpx.ConnectError, httpx.TimeoutException):
             time.sleep(0.25)
@@ -339,7 +441,8 @@ class OllamaEmbeddingProvider:
                 response = self._client.embed(
                     model=self._model,
                     input=list(texts),
-                    keep_alive="0",
+                    keep_alive=self._keep_alive,
+                    options=self._options,
                 )
             except (ollama.ResponseError, httpx.HTTPError) as retry_exc:
                 raise self._embedding_error() from retry_exc
@@ -383,15 +486,38 @@ class SemanticSearchService:
         embedder: EmbeddingProvider | None = None,
         embedding_timeout: int = 180,
         min_cosine_score: float = 0.65,
+        include_dirs: Sequence[str] | None = None,
+        max_note_bytes: int = _MAX_NOTE_BYTES,
+        embedding_keep_alive: str | int = "0",
+        embedding_batch_size: int = _EMBED_BATCH_SIZE,
+        embedding_num_thread: int | None = None,
+        thinking_filter_dirs: Sequence[str] = (),
     ) -> None:
         if not model.strip():
             raise ValueError("El modelo de embeddings no puede estar vacío.")
         if not -1.0 <= min_cosine_score <= 1.0:
             raise ValueError("El umbral de similitud debe estar entre -1 y 1.")
+        if max_note_bytes < 1:
+            raise ValueError("El límite de tamaño por nota debe ser positivo.")
+        if embedding_batch_size < 1:
+            raise ValueError("El lote de embeddings debe ser positivo.")
+        if embedding_num_thread is not None and embedding_num_thread < 1:
+            raise ValueError("El número de hilos debe ser positivo.")
         self._vault = vault.expanduser()
         self._model = model.strip()
         self._min_cosine_score = min_cosine_score
-        index_identity = f"{_INDEX_SCHEMA_VERSION}\0{self._model}"
+        self._include_dirs = _normalize_include_dirs(include_dirs)
+        self._max_note_bytes = max_note_bytes
+        self._embedding_batch_size = embedding_batch_size
+        self._thinking_filter_dirs = (
+            _normalize_include_dirs(thinking_filter_dirs) or ()
+            if thinking_filter_dirs
+            else ()
+        )
+        index_identity = (
+            f"{_INDEX_SCHEMA_VERSION}\0{self._model}"
+            f"\0thinking_filter_dirs={','.join(self._thinking_filter_dirs)}"
+        )
         model_key = hashlib.sha256(index_identity.encode("utf-8")).hexdigest()[:12]
         self._model_dir = index_dir.expanduser() / model_key
         self._qdrant_dir = self._model_dir / "qdrant"
@@ -399,10 +525,25 @@ class SemanticSearchService:
         self._embedder = embedder or OllamaEmbeddingProvider(
             self._model,
             timeout=embedding_timeout,
+            keep_alive=embedding_keep_alive,
+            num_thread=embedding_num_thread,
         )
 
-    def index(self) -> SearchIndexStats:
-        """Scan safe Markdown notes and update only changed file hashes."""
+    def index(
+        self,
+        *,
+        batch_size: int = 5,
+        work_interval_seconds: float = 60.0,
+        cooldown_seconds: float = 60.0,
+        progress_callback: Callable[[SearchIndexProgress], None] | None = None,
+    ) -> SearchIndexStats:
+        """Hash sources, checkpoint each note, and pace embedding requests."""
+        if batch_size < 1:
+            raise ValueError("El lote de fuentes debe ser positivo.")
+        if work_interval_seconds < 0:
+            raise ValueError("El intervalo de trabajo no puede ser negativo.")
+        if cooldown_seconds < 0:
+            raise ValueError("La pausa entre solicitudes no puede ser negativa.")
         try:
             vault_root = self._vault.resolve(strict=True)
         except OSError as exc:
@@ -432,78 +573,337 @@ class SemanticSearchService:
                 "El directorio del índice no puede contener la bóveda."
             )
 
+        safe_paths, warnings = self._load_note_paths(vault_root)
         self._model_dir.mkdir(parents=True, exist_ok=True)
-        notes, scanned_paths, warnings = self._load_notes(vault_root)
         with closing(self._open_database()) as database:
             indexed_sources = dict(
                 database.execute("SELECT path, source_hash FROM sources").fetchall()
             )
-            changed_notes = [
-                note
-                for note in notes
-                if indexed_sources.get(note.path) != note.source_hash
-            ]
-            unchanged = len(notes) - len(changed_notes)
-            deleted_paths = sorted(set(indexed_sources) - scanned_paths)
-            old_chunk_ids = self._chunk_ids_for_paths(
-                database,
-                {note.path for note in changed_notes} | set(deleted_paths),
+        scanned_paths: set[str] = set()
+        changed_paths: list[tuple[str, Path]] = []
+        unchanged = 0
+        for current, (relative, path) in enumerate(safe_paths, start=1):
+            try:
+                if path.stat().st_size > self._max_note_bytes:
+                    warnings.append(f"Se omitió una nota demasiado grande: {relative}")
+                else:
+                    scanned_paths.add(relative)
+                    content = path.read_text(encoding="utf-8")
+                    source_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    if indexed_sources.get(relative) == source_hash:
+                        unchanged += 1
+                    else:
+                        changed_paths.append((relative, path))
+            except (OSError, UnicodeDecodeError) as exc:
+                scanned_paths.add(relative)
+                warnings.append(f"No se pudo leer {relative} ({type(exc).__name__}).")
+            self._notify_index_progress(
+                progress_callback,
+                SearchIndexProgress(
+                    stage="scan",
+                    current=current,
+                    total=len(safe_paths),
+                    detail=f"Comparando hashes: {relative}",
+                    indexed=0,
+                    unchanged=unchanged,
+                ),
             )
 
-            pending_chunks = [
-                (note, chunk) for note in changed_notes for chunk in note.chunks
-            ]
-            vectors = self._embed_chunks(pending_chunks)
-            points = self._qdrant_points(pending_chunks, vectors)
-            client = self._open_qdrant()
-            try:
-                if points:
-                    self._ensure_collection(client, len(points[0].vector))
-                    client.upsert(
-                        collection_name=_COLLECTION_NAME,
-                        points=points,
-                        wait=True,
-                    )
-                self._replace_source_records(
-                    database,
-                    changed_notes,
-                    deleted_paths,
-                )
-                active_chunks_after = self._active_chunk_ids(database)
-                stale_ids = old_chunk_ids - active_chunks_after
-                if client.collection_exists(_COLLECTION_NAME):
-                    stale_ids.update(
-                        self._orphaned_chunk_ids(client, active_chunks_after)
-                    )
-                    if stale_ids:
-                        client.delete(
-                            collection_name=_COLLECTION_NAME,
-                            points_selector=sorted(stale_ids),
-                            wait=True,
+        deleted_paths = sorted(set(indexed_sources) - scanned_paths)
+        removed = self._remove_indexed_paths(deleted_paths)
+        batch_count = math.ceil(len(changed_paths) / batch_size)
+        indexed = 0
+        pacer = _IndexPacer(
+            work_interval_seconds=work_interval_seconds,
+            cooldown_seconds=cooldown_seconds,
+            progress_callback=progress_callback,
+        )
+        for batch_index, start in enumerate(
+            range(0, len(changed_paths), batch_size),
+            start=1,
+        ):
+            path_batch = changed_paths[start : start + batch_size]
+            for relative, path in path_batch:
+                try:
+                    if path.stat().st_size > self._max_note_bytes:
+                        scanned_paths.discard(relative)
+                        warnings.append(
+                            f"Se omitió una nota que superó el límite: {relative}"
                         )
-            except (
-                OSError,
-                RuntimeError,
-                sqlite3.Error,
-                UnexpectedResponse,
-                ValueError,
-            ) as exc:
-                raise SemanticSearchError(
-                    f"No se pudo actualizar el índice local: {exc}"
-                ) from exc
-            finally:
-                client.close()
+                        continue
+                    content = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    warnings.append(
+                        f"No se pudo leer {relative} para indexar "
+                        f"({type(exc).__name__})."
+                    )
+                    continue
+                if hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest() == indexed_sources.get(relative):
+                    unchanged += 1
+                    continue
+                note = parse_markdown_source(
+                    relative,
+                    content,
+                    exclude_thinking_blocks=any(
+                        relative.casefold().startswith(f"{directory.casefold()}/")
+                        for directory in self._thinking_filter_dirs
+                    ),
+                )
+                warnings.extend(
+                    f"Frontmatter de {relative}: {warning}" for warning in note.warnings
+                )
+                self._index_note_batch(
+                    note,
+                    batch_index=batch_index,
+                    batch_count=batch_count,
+                    progress_callback=progress_callback,
+                    pacer=pacer,
+                    completed_sources=indexed,
+                    total_sources=len(changed_paths),
+                    unchanged=unchanged,
+                )
+                indexed += 1
+
+        self._cleanup_orphaned_vectors(progress_callback)
+        self._notify_index_progress(
+            progress_callback,
+            SearchIndexProgress(
+                stage="complete",
+                current=len(safe_paths),
+                total=len(safe_paths),
+                detail="Índice guardado y sincronizado.",
+                indexed=indexed,
+                unchanged=unchanged,
+                batch_index=batch_count,
+                batch_count=batch_count,
+            ),
+        )
 
         return SearchIndexStats(
             scanned=len(scanned_paths),
-            indexed=len(changed_notes),
+            indexed=indexed,
             unchanged=unchanged,
-            removed=len(deleted_paths),
+            removed=removed,
             skipped=len(warnings),
             warnings=tuple(warnings),
         )
 
-    def search(self, query: str, *, limit: int = 5) -> list[SearchHit]:
+    @staticmethod
+    def _notify_index_progress(
+        callback: Callable[[SearchIndexProgress], None] | None,
+        event: SearchIndexProgress,
+    ) -> None:
+        if callback is not None:
+            callback(event)
+
+    def _index_note_batch(
+        self,
+        note: SourceDocument,
+        *,
+        batch_index: int,
+        batch_count: int,
+        progress_callback: Callable[[SearchIndexProgress], None] | None,
+        pacer: _IndexPacer,
+        completed_sources: int,
+        total_sources: int,
+        unchanged: int,
+    ) -> None:
+        source_paths = {note.path}
+        with closing(self._open_database()) as database:
+            old_chunk_ids = self._chunk_ids_for_paths(database, source_paths)
+
+        chunk_total = len(note.chunks)
+        chunk_completed = 0
+        client = self._open_qdrant()
+        try:
+            vector_dimension: int | None = None
+            for start in range(0, len(note.chunks), self._embedding_batch_size):
+                pending_chunks = [
+                    (note, chunk)
+                    for chunk in note.chunks[start : start + self._embedding_batch_size]
+                ]
+                vector_dimension = self._upsert_chunk_batch(
+                    client,
+                    pending_chunks,
+                    vector_dimension,
+                )
+                chunk_completed += len(pending_chunks)
+                self._notify_index_progress(
+                    progress_callback,
+                    SearchIndexProgress(
+                        stage="embed",
+                        current=completed_sources,
+                        total=total_sources,
+                        detail=(
+                            f"Grupo {batch_index}/{batch_count} · "
+                            f"{note.path} · fragmentos "
+                            f"{chunk_completed}/{chunk_total}"
+                        ),
+                        indexed=completed_sources,
+                        chunks_completed=chunk_completed,
+                        chunks_total=chunk_total,
+                        batch_index=batch_index,
+                        batch_count=batch_count,
+                    ),
+                )
+                pacer.after_embedding_batch(
+                    batch_index=batch_index,
+                    batch_count=batch_count,
+                    source_path=note.path,
+                    chunks_completed=chunk_completed,
+                    chunks_total=chunk_total,
+                    indexed=completed_sources,
+                    unchanged=unchanged,
+                )
+
+            with closing(self._open_database()) as database:
+                self._replace_source_records(database, [note], [])
+                active_ids = self._chunk_ids_for_paths(database, source_paths)
+
+            stale_ids = old_chunk_ids - active_ids
+            if stale_ids and client.collection_exists(_COLLECTION_NAME):
+                client.delete(
+                    collection_name=_COLLECTION_NAME,
+                    points_selector=sorted(stale_ids),
+                    wait=True,
+                )
+        except (
+            OSError,
+            RuntimeError,
+            sqlite3.Error,
+            UnexpectedResponse,
+            ValueError,
+        ) as exc:
+            raise SemanticSearchError(
+                f"No se pudo guardar el lote {batch_index}/{batch_count}: {exc}"
+            ) from exc
+        finally:
+            client.close()
+
+        self._notify_index_progress(
+            progress_callback,
+            SearchIndexProgress(
+                stage="embed",
+                current=min(completed_sources + 1, total_sources),
+                total=total_sources,
+                detail=f"Checkpoint confirmado: {note.path}",
+                indexed=completed_sources + 1,
+                chunks_completed=chunk_total,
+                chunks_total=chunk_total,
+                batch_index=batch_index,
+                batch_count=batch_count,
+            ),
+        )
+
+    def _upsert_chunk_batch(
+        self,
+        client: QdrantClient,
+        pending: list[tuple[SourceDocument, SourceChunk]],
+        previous_dimension: int | None,
+    ) -> int:
+        vectors = self._embed_chunk_batch(pending, previous_dimension)
+        dimension = len(vectors[0])
+        self._ensure_collection(client, dimension)
+        client.upsert(
+            collection_name=_COLLECTION_NAME,
+            points=self._qdrant_points(pending, vectors),
+            wait=True,
+        )
+        return dimension
+
+    def _embed_chunk_batch(
+        self,
+        pending_chunks: list[tuple[SourceDocument, SourceChunk]],
+        previous_dimension: int | None,
+    ) -> list[list[float]]:
+        texts = [
+            f"{note.title}\n{chunk.section_path}\n\n{chunk.content}".strip()
+            for note, chunk in pending_chunks
+        ]
+        vectors = self._embedder.embed(texts)
+        if len(vectors) != len(pending_chunks):
+            raise SemanticSearchError(
+                "El proveedor de embeddings devolvió una cantidad incorrecta."
+            )
+        dimension = len(vectors[0]) if vectors else 0
+        if dimension == 0 or any(
+            len(vector) != dimension
+            or not all(math.isfinite(value) for value in vector)
+            for vector in vectors
+        ):
+            raise SemanticSearchError(
+                "Los embeddings no tienen dimensiones válidas y consistentes."
+            )
+        if previous_dimension is not None and previous_dimension != dimension:
+            raise SemanticSearchError(
+                "El modelo devolvió dimensiones distintas entre lotes."
+            )
+        return vectors
+
+    def _remove_indexed_paths(self, deleted_paths: list[str]) -> int:
+        if not deleted_paths:
+            return 0
+        with closing(self._open_database()) as database:
+            self._replace_source_records(database, [], deleted_paths)
+        return len(deleted_paths)
+
+    def _cleanup_orphaned_vectors(
+        self,
+        progress_callback: Callable[[SearchIndexProgress], None] | None,
+    ) -> None:
+        self._notify_index_progress(
+            progress_callback,
+            SearchIndexProgress(
+                stage="cleanup",
+                current=0,
+                total=1,
+                detail="Sincronizando vectores y checkpoints.",
+            ),
+        )
+        if not self._qdrant_dir.is_dir():
+            return
+        with closing(self._open_database()) as database:
+            active_ids = self._active_chunk_ids(database)
+        client = self._open_qdrant()
+        try:
+            if client.collection_exists(_COLLECTION_NAME):
+                orphaned_ids = self._orphaned_chunk_ids(client, active_ids)
+                if orphaned_ids:
+                    client.delete(
+                        collection_name=_COLLECTION_NAME,
+                        points_selector=sorted(orphaned_ids),
+                        wait=True,
+                    )
+        except (
+            OSError,
+            RuntimeError,
+            UnexpectedResponse,
+            ValueError,
+        ) as exc:
+            raise SemanticSearchError(
+                f"No se pudo finalizar la sincronización vectorial: {exc}"
+            ) from exc
+        finally:
+            client.close()
+        self._notify_index_progress(
+            progress_callback,
+            SearchIndexProgress(
+                stage="cleanup",
+                current=1,
+                total=1,
+                detail="Vectores sincronizados.",
+            ),
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[SearchHit]:
         """Fuse semantic and BM25 rankings while rejecting stale vectors."""
         normalized_query = query.strip()
         if not normalized_query:
@@ -515,9 +915,13 @@ class SemanticSearchService:
                 "Todavía no hay índice. Ejecuta `blackbelt run search index`."
             )
         if _is_project_overview_query(normalized_query):
+            if progress_callback is not None:
+                progress_callback("Consultando el inventario de proyectos en SQLite...")
             return self._project_overview(limit)
         query_terms = _search_terms(normalized_query)
 
+        if progress_callback is not None:
+            progress_callback("Buscando coincidencias léxicas en SQLite (BM25)...")
         with closing(self._open_database()) as database:
             active_chunks = {
                 str(row[0]): _ActiveChunk(
@@ -562,6 +966,8 @@ class SemanticSearchService:
                 candidate_limit,
             )
 
+        if progress_callback is not None:
+            progress_callback("Calculando el embedding local de la consulta...")
         query_vectors = self._embedder.embed([normalized_query])
         if (
             len(query_vectors) != 1
@@ -572,6 +978,8 @@ class SemanticSearchService:
                 "No se pudo generar un embedding válido para la consulta."
             )
         query_vector = query_vectors[0]
+        if progress_callback is not None:
+            progress_callback("Buscando pasajes cercanos en Qdrant local...")
         client = self._open_qdrant()
         try:
             semantic_results = self._semantic_search(
@@ -592,6 +1000,8 @@ class SemanticSearchService:
         finally:
             client.close()
 
+        if progress_callback is not None:
+            progress_callback("Fusionando resultados y validando su procedencia...")
         fused: dict[str, _SearchCandidate] = {}
         self._accumulate_ranked_hits(
             fused,
@@ -630,6 +1040,82 @@ class SemanticSearchService:
             )
             for candidate in ordered[:limit]
         ]
+
+    def read_indexed_source(self, relative_path: str) -> IndexedSource:
+        """Read an indexed Markdown source only if its indexed hash is current."""
+        if not self._database_path.is_file():
+            raise SemanticSearchError(
+                "Todavía no hay índice. Ejecuta `blackbelt run companion index`."
+            )
+        normalized = relative_path.replace("\\", "/")
+        source_path = PurePosixPath(normalized)
+        if (
+            source_path.is_absolute()
+            or not source_path.parts
+            or any(part in {"", ".", ".."} for part in source_path.parts)
+            or not self._path_is_in_scope(source_path)
+        ):
+            raise SemanticSearchError(
+                "La fuente solicitada está fuera del alcance permitido."
+            )
+
+        with closing(self._open_database()) as database:
+            row = database.execute(
+                "SELECT title, source_hash FROM sources WHERE path = ?",
+                (source_path.as_posix(),),
+            ).fetchone()
+        if row is None:
+            raise SemanticSearchError(
+                f"La fuente no está en el índice actual: {source_path.as_posix()}"
+            )
+
+        vault_root = self._vault.resolve(strict=True)
+        candidate = vault_root.joinpath(*source_path.parts)
+        if any(
+            _is_link_or_junction(vault_root.joinpath(*source_path.parts[:index]))
+            for index in range(1, len(source_path.parts) + 1)
+        ):
+            raise SemanticSearchError("La fuente no puede atravesar enlaces.")
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(vault_root)
+            if not resolved.is_file():
+                raise SemanticSearchError("La fuente no es un archivo.")
+            if resolved.stat().st_size > self._max_note_bytes:
+                raise SemanticSearchError(
+                    "La fuente supera el límite configurado; actualiza la "
+                    "configuración y vuelve a indexar."
+                )
+            content = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            if isinstance(exc, SemanticSearchError):
+                raise
+            raise SemanticSearchError(
+                "No se pudo leer la fuente indexada de forma segura."
+            ) from exc
+
+        current_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if current_hash != str(row[1]):
+            raise SemanticSearchError(
+                "La fuente cambió desde la indexación; ejecuta "
+                "`blackbelt run companion index` antes de volver a consultarla."
+            )
+        return IndexedSource(
+            path=source_path.as_posix(),
+            title=str(row[0]),
+            source_hash=current_hash,
+            content=content,
+        )
+
+    def _path_is_in_scope(self, path: PurePosixPath) -> bool:
+        if self._include_dirs is None:
+            return True
+        normalized_path = path.as_posix().casefold()
+        return any(
+            normalized_path == include_dir.casefold()
+            or normalized_path.startswith(f"{include_dir.casefold()}/")
+            for include_dir in self._include_dirs
+        )
 
     def _project_overview(self, limit: int) -> list[SearchHit]:
         """List project notes even when their titles do not match the query."""
@@ -762,102 +1248,84 @@ class SemanticSearchService:
             )
         return results
 
-    def _load_notes(
+    def _load_note_paths(
         self,
         vault_root: Path,
-    ) -> tuple[list[SourceDocument], set[str], list[str]]:
+    ) -> tuple[list[tuple[str, Path]], list[str]]:
         safe_paths: list[tuple[str, Path]] = []
         warnings: list[str] = []
+        walk_roots = self._walk_roots(vault_root)
 
         def record_walk_error(error: OSError) -> None:
-            warnings.append(
-                f"No se pudo recorrer una carpeta ({type(error).__name__})."
-            )
+            raise SemanticSearchError(
+                "No se pudo completar el inventario de carpetas; el índice no "
+                "se ha modificado."
+            ) from error
 
-        for current, directory_names, filenames in os.walk(
-            vault_root,
-            followlinks=False,
-            onerror=record_walk_error,
-        ):
-            current_path = Path(current)
-            directory_names[:] = sorted(
-                (
-                    name
-                    for name in directory_names
-                    if not name.startswith(".")
-                    and name.casefold() not in _EXCLUDED_DIRECTORY_NAMES
-                    and not _is_link_or_junction(current_path / name)
-                ),
-                key=str.casefold,
-            )
-            for filename in filenames:
-                if Path(filename).suffix.casefold() != ".md":
-                    continue
-                candidate = current_path / filename
-                if _is_link_or_junction(candidate):
-                    continue
-                try:
-                    resolved = candidate.resolve(strict=True)
-                    relative = resolved.relative_to(vault_root)
-                except (OSError, ValueError):
-                    continue
-                if any(
-                    part.startswith(".") or part.casefold() in _EXCLUDED_DIRECTORY_NAMES
-                    for part in relative.parts
-                ):
-                    continue
-                safe_paths.append((relative.as_posix(), resolved))
-
-        notes: list[SourceDocument] = []
-        scanned_paths = {relative for relative, _ in safe_paths}
-        for relative, path in safe_paths:
-            try:
-                if path.stat().st_size > _MAX_NOTE_BYTES:
-                    warnings.append(f"Se omitió una nota demasiado grande: {relative}")
-                    continue
-                content = path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                warnings.append(f"No se pudo leer {relative} ({type(exc).__name__}).")
-                continue
-            note = parse_markdown_source(relative, content)
-            notes.append(note)
-            warnings.extend(
-                f"Frontmatter de {relative}: {warning}" for warning in note.warnings
-            )
-        notes.sort(key=lambda note: note.path.casefold())
-        return notes, scanned_paths, warnings
-
-    def _embed_chunks(
-        self,
-        pending_chunks: list[tuple[SourceDocument, SourceChunk]],
-    ) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for start in range(0, len(pending_chunks), _EMBED_BATCH_SIZE):
-            batch = pending_chunks[start : start + _EMBED_BATCH_SIZE]
-            texts = [
-                f"{note.title}\n{chunk.section_path}\n\n{chunk.content}".strip()
-                for note, chunk in batch
-            ]
-            batch_vectors = self._embedder.embed(texts)
-            if len(batch_vectors) != len(batch):
-                raise SemanticSearchError(
-                    "El proveedor de embeddings devolvió una cantidad incorrecta."
-                )
-            dimension = len(batch_vectors[0]) if batch_vectors else 0
-            if dimension == 0 or any(
-                len(vector) != dimension
-                or not all(math.isfinite(value) for value in vector)
-                for vector in batch_vectors
+        for walk_root in walk_roots:
+            for current, directory_names, filenames in os.walk(
+                walk_root,
+                followlinks=False,
+                onerror=record_walk_error,
             ):
-                raise SemanticSearchError(
-                    "Los embeddings no tienen dimensiones válidas y consistentes."
+                current_path = Path(current)
+                directory_names[:] = sorted(
+                    (
+                        name
+                        for name in directory_names
+                        if not name.startswith(".")
+                        and name.casefold() not in _EXCLUDED_DIRECTORY_NAMES
+                        and not _is_link_or_junction(current_path / name)
+                    ),
+                    key=str.casefold,
                 )
-            if vectors and len(vectors[0]) != dimension:
+                for filename in filenames:
+                    if Path(filename).suffix.casefold() != ".md":
+                        continue
+                    candidate = current_path / filename
+                    if _is_link_or_junction(candidate):
+                        continue
+                    try:
+                        resolved = candidate.resolve(strict=True)
+                        relative = resolved.relative_to(vault_root)
+                    except (OSError, ValueError):
+                        continue
+                    if any(
+                        part.startswith(".")
+                        or part.casefold() in _EXCLUDED_DIRECTORY_NAMES
+                        for part in relative.parts
+                    ):
+                        continue
+                    safe_paths.append((relative.as_posix(), resolved))
+
+        safe_paths.sort(key=lambda item: item[0].casefold())
+        return safe_paths, warnings
+
+    def _walk_roots(self, vault_root: Path) -> tuple[Path, ...]:
+        if self._include_dirs is None:
+            return (vault_root,)
+
+        roots: list[Path] = []
+        for relative_dir in self._include_dirs:
+            candidate = vault_root.joinpath(*PurePosixPath(relative_dir).parts)
+            if _is_link_or_junction(candidate):
                 raise SemanticSearchError(
-                    "El modelo devolvió dimensiones distintas entre lotes."
+                    f"La carpeta incluida no puede ser un enlace: {relative_dir}"
                 )
-            vectors.extend(batch_vectors)
-        return vectors
+            try:
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(vault_root)
+            except (OSError, ValueError) as exc:
+                raise SemanticSearchError(
+                    "No se puede acceder a la carpeta incluida "
+                    f"'{relative_dir}'; el índice no se ha modificado."
+                ) from exc
+            if not resolved.is_dir():
+                raise SemanticSearchError(
+                    f"La ruta incluida no es una carpeta: {relative_dir}"
+                )
+            roots.append(resolved)
+        return tuple(roots)
 
     @staticmethod
     def _qdrant_points(
@@ -1372,6 +1840,10 @@ class SemanticSearchService:
                     content_match_count=len(
                         set(_searchable_body_terms(result.content)) & set(query_terms)
                     ),
+                    section_match_count=len(
+                        set(_search_terms(" ".join(result.provenance.section_titles)))
+                        & set(query_terms)
+                    ),
                     provenance=result.provenance,
                     meaningful_term_count=_meaningful_body_term_count(result.content),
                 ),
@@ -1423,6 +1895,42 @@ def _is_loopback_ollama_host(host: str) -> bool:
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def _normalize_include_dirs(
+    include_dirs: Sequence[str] | None,
+) -> tuple[str, ...] | None:
+    if include_dirs is None:
+        return None
+    if not include_dirs:
+        raise ValueError("El alcance del índice debe incluir alguna carpeta.")
+
+    normalized: set[str] = set()
+    for include_dir in include_dirs:
+        if not isinstance(include_dir, str) or not include_dir.strip():
+            raise ValueError("Las carpetas incluidas deben ser rutas relativas.")
+        raw_path = include_dir.strip().replace("\\", "/")
+        path = PurePosixPath(raw_path)
+        if (
+            raw_path.startswith("/")
+            or re.match(r"^[A-Za-z]:", raw_path)
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or any(part.startswith(".") for part in path.parts)
+            or any(part.casefold() in _EXCLUDED_DIRECTORY_NAMES for part in path.parts)
+        ):
+            raise ValueError(
+                f"La carpeta incluida no es una ruta relativa permitida: {include_dir}"
+            )
+        normalized.add(path.as_posix())
+
+    ordered = sorted(normalized, key=lambda item: (item.count("/"), item.casefold()))
+    roots: list[str] = []
+    for candidate in ordered:
+        if not any(
+            candidate.casefold().startswith(f"{root.casefold()}/") for root in roots
+        ):
+            roots.append(candidate)
+    return tuple(roots)
 
 
 def _is_link_or_junction(path: Path) -> bool:
@@ -1559,18 +2067,25 @@ def _best_candidate_by_path(
     best_by_path: dict[str, _SearchCandidate] = {}
     for candidate in candidates:
         current = best_by_path.get(candidate.path)
-        candidate_quality = (
-            candidate.content_match_count,
-            candidate.meaningful_term_count,
-            candidate.score,
-        )
-        if current is None or candidate_quality > (
-            current.content_match_count,
-            current.meaningful_term_count,
-            current.score,
+        if current is None or _candidate_quality(candidate) > _candidate_quality(
+            current
         ):
             best_by_path[candidate.path] = candidate
     return best_by_path
+
+
+def _candidate_quality(candidate: _SearchCandidate) -> tuple[int, int, int, int, float]:
+    """Use section matches as evidence only when the passage also matches."""
+    section_bonus = (
+        candidate.section_match_count if candidate.content_match_count else 0
+    )
+    return (
+        candidate.content_match_count + section_bonus,
+        candidate.content_match_count,
+        section_bonus,
+        candidate.meaningful_term_count,
+        candidate.score,
+    )
 
 
 def _make_snippet(content: str, tokens: list[str]) -> str:

@@ -47,6 +47,10 @@ TOOLS = {
         "module": "blackbelt.tools.chat",
         "description": "Chat con Ollama local",
     },
+    "companion": {
+        "module": "blackbelt.tools.companion",
+        "description": "Compañero local con memoria documental y citas",
+    },
     "audit": {
         "module": "blackbelt.tools.audit",
         "description": "Log de auditoria del Gatekeeper",
