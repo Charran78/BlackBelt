@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10141d">
+  <meta name="description" content="Centro de mando local de la suite BlackBelt.">
+  <title>BlackBelt Launcher</title>
+  <link rel="manifest" href="/launcher/manifest.webmanifest">
+  <link rel="icon" href="/launcher/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/launcher/vendor/xterm.css">
+  <link rel="stylesheet" href="/launcher/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <a class="brand" href="/launcher/" aria-label="BlackBelt Launcher">
+        <span class="brand-mark" aria-hidden="true">B</span>
+        <span><strong>BlackBelt</strong><small>CENTRO DE MANDO</small></span>
+      </a>
+
+      <section class="side-section">
+        <h2>Entorno local</h2>
+        <dl id="environment-panel" class="environment-list">
+          <div><dt>Detectando</dt><dd>Entorno</dd></div>
+        </dl>
+      </section>
+
+      <section class="side-section">
+        <h2>Recursos</h2>
+        <div class="resource" id="cpu-resource">
+          <div><span>CPU</span><strong>--</strong></div>
+          <progress max="100" value="0"></progress>
+        </div>
+        <div class="resource" id="memory-resource">
+          <div><span>Memoria</span><strong>--</strong></div>
+          <progress max="100" value="0"></progress>
+        </div>
+        <div class="resource" id="disk-resource">
+          <div><span>Disco del proyecto</span><strong>--</strong></div>
+          <progress max="100" value="0"></progress>
+        </div>
+      </section>
+
+      <section class="side-section">
+        <div class="section-heading">
+          <h2>Ollama local</h2>
+          <span id="ollama-indicator" class="indicator" aria-label="Estado desconocido"></span>
+        </div>
+        <p id="ollama-summary" class="muted" aria-live="polite">Comprobando el servicio…</p>
+        <button id="ollama-start-button" class="button button-secondary" type="button" disabled>
+          Iniciar Ollama
+        </button>
+      </section>
+
+      <section class="side-section">
+        <div class="section-heading">
+          <h2>Bóveda Obsidian</h2>
+          <span id="vault-indicator" class="indicator" aria-label="Estado desconocido"></span>
+        </div>
+        <p id="vault-summary" class="muted">Comprobando ruta…</p>
+      </section>
+
+      <div class="sidebar-footer">
+        <span class="local-badge">Local-first · sin telemetría</span>
+        <button id="refresh-button" class="button button-quiet" type="button">Actualizar estado</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TU SUITE, EN UN SOLO LUGAR</p>
+          <h1>Centro de mando</h1>
+          <p class="muted">El cinturón BlackBelt, por CLI o desde su interfaz visual.</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="install-button" class="button button-secondary hidden" type="button">
+            Instalar launcher
+          </button>
+          <button id="terminal-toggle" class="button button-primary" type="button"
+            aria-expanded="false" aria-controls="terminal-panel">
+            Abrir PowerShell
+          </button>
+        </div>
+      </header>
+
+      <section class="hero" aria-label="Resumen">
+        <div class="hero-mark" aria-hidden="true">BB</div>
+        <div>
+          <h2>Tu flujo diario empieza aquí</h2>
+          <p>Abre aplicaciones, comprueba servicios y prepara herramientas sin salir del launcher.</p>
+        </div>
+        <span id="last-updated" class="muted">Estado pendiente</span>
+      </section>
+
+      <section class="index-panel content-section" aria-labelledby="index-heading">
+        <div class="index-copy">
+          <p class="eyebrow">MEMORIA LOCAL</p>
+          <h2 id="index-heading">Indexación de Companion</h2>
+          <p>
+            Sincroniza conversaciones y notas aprobadas con el índice local.
+            El cálculo de embeddings puede consumir CPU, memoria y Ollama durante
+            bastante tiempo; no se ejecuta automáticamente.
+          </p>
+          <p class="muted">
+            Solo procesa las carpetas indicadas abajo; el diario personal queda
+            fuera. Cada conversación confirmada se conserva al detener.
+          </p>
+          <p id="index-configuration" class="muted">
+            Alcance y ritmo: comprobando configuración…
+          </p>
+        </div>
+        <div class="index-controls">
+          <div class="index-progress-copy">
+            <strong id="index-state">Lista para iniciar</strong>
+            <span id="index-detail" class="muted" aria-live="polite">
+              Se conserva el progreso confirmado entre ejecuciones.
+            </span>
+          </div>
+          <progress id="index-progress" max="100" value="0"
+            aria-label="Progreso de indexación"></progress>
+          <div class="index-actions">
+            <button id="index-start" class="button button-primary" type="button">
+              Indexar memoria
+            </button>
+            <button id="index-cancel" class="button button-danger" type="button" disabled>
+              Detener al checkpoint
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="index-panel work-index-panel content-section"
+        aria-labelledby="work-index-heading">
+        <div class="index-copy">
+          <p class="eyebrow">CONOCIMIENTO DE TRABAJO</p>
+          <h2 id="work-index-heading">Indexación de Search</h2>
+          <p>
+            Sincroniza proyectos, tareas, cursos, clientes, reuniones,
+            documentación y otras carpetas laborales aprobadas con el índice
+            híbrido local. No vuelve a procesar las conversaciones de Companion.
+          </p>
+          <p class="muted">
+            El cálculo de embeddings puede consumir CPU, memoria y Ollama durante
+            bastante tiempo. Solo empieza con autorización; cada nota confirmada
+            se conserva al detener.
+          </p>
+          <p id="work-index-configuration" class="muted">
+            Alcance y ritmo: comprobando configuración…
+          </p>
+        </div>
+        <div class="index-controls">
+          <div class="index-progress-copy">
+            <strong id="work-index-state">Lista para iniciar</strong>
+            <span id="work-index-detail" class="muted" aria-live="polite">
+              El índice de trabajo y el de Companion se mantienen separados.
+            </span>
+          </div>
+          <progress id="work-index-progress" max="100" value="0"
+            aria-label="Progreso de indexación de trabajo"></progress>
+          <div class="index-actions">
+            <button id="work-index-start" class="button button-primary" type="button">
+              Indexar trabajo
+            </button>
+            <button id="work-index-cancel" class="button button-danger"
+              type="button" disabled>
+              Detener al checkpoint
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="content-section" aria-labelledby="apps-heading">
+        <div class="section-heading section-heading-main">
+          <div>
+            <p class="eyebrow">APLICACIONES</p>
+            <h2 id="apps-heading">Tus bolsillos</h2>
+          </div>
+          <label class="search-field">
+            <span class="visually-hidden">Buscar aplicaciones</span>
+            <input id="app-search" type="search" placeholder="Buscar aplicaciones…">
+          </label>
+        </div>
+        <div id="app-grid" class="card-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="content-section" aria-labelledby="tools-heading">
+        <div>
+          <p class="eyebrow">HERRAMIENTAS CLI</p>
+          <h2 id="tools-heading">Accesos preparados</h2>
+          <p class="muted">El comando se muestra en PowerShell para que lo revises antes de ejecutarlo.</p>
+        </div>
+        <div id="tool-grid" class="card-grid tool-grid" aria-live="polite"></div>
+      </section>
+
+      <footer class="page-footer">
+        <span id="server-summary">Launcher local · 127.0.0.1</span>
+        <span id="clock"></span>
+      </footer>
+    </main>
+  </div>
+
+  <section id="terminal-panel" class="terminal-panel" aria-label="Terminal PowerShell" hidden>
+    <header class="terminal-header">
+      <div>
+        <strong>PowerShell integrada</strong>
+        <span id="terminal-status" class="terminal-status">Cerrada</span>
+      </div>
+      <p>Consola real de tu usuario de Windows, no es un sandbox.</p>
+      <div class="terminal-actions">
+        <button id="terminal-clear" class="button button-quiet" type="button">Limpiar vista</button>
+        <button id="terminal-close" class="button button-danger" type="button" disabled>
+          Cerrar sesión
+        </button>
+        <button id="terminal-hide" class="icon-button" type="button" aria-label="Ocultar terminal">−</button>
+      </div>
+    </header>
+    <div id="terminal-screen" class="terminal-screen" aria-label="Salida de PowerShell"></div>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/launcher/vendor/xterm.js"></script>
+  <script src="/launcher/vendor/addon-fit.js"></script>
+  <script src="/launcher/app.js"></script>
+</body>
+</html>

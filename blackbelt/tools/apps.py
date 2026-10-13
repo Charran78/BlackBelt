@@ -25,7 +25,14 @@ from blackbelt.webapps import create_app
 
 console = Console()
 LOOPBACK_HOST = "127.0.0.1"
-_APPLICATIONS = ("soma", "ghostwriter", "meetings", "plan", "companion")
+_APPLICATIONS = (
+    "launcher",
+    "soma",
+    "ghostwriter",
+    "meetings",
+    "plan",
+    "companion",
+)
 _CHILD_ARGUMENT = "--blackbelt-webapps-child="
 _DESKTOP_ARGUMENT = "--blackbelt-desktop-launch="
 _START_TIMEOUT_SECONDS = 20.0
@@ -61,7 +68,7 @@ def run(args: Sequence[str] | str | None = None) -> None:
     parser.add_argument(
         "--install-shortcut",
         action="store_true",
-        help="Crea un acceso directo de escritorio para Ghost Writer.",
+        help="Crea un acceso directo de escritorio para Ghost Writer o Launcher.",
     )
     parser.add_argument(
         "--stop",
@@ -81,16 +88,18 @@ def run(args: Sequence[str] | str | None = None) -> None:
         return
     if parsed.application is None:
         parser.error(
-            "indica soma, ghostwriter, meetings, plan, companion o usa --stop."
+            "indica launcher, soma, ghostwriter, meetings, plan, companion "
+            "o usa --stop."
         )
     if parsed.install_shortcut:
-        if parsed.application != "ghostwriter":
+        if parsed.application not in {"ghostwriter", "launcher"}:
             parser.error(
-                "--install-shortcut solo está disponible para ghostwriter."
+                "--install-shortcut solo está disponible para ghostwriter o launcher."
             )
-        _install_desktop_shortcut()
+        _install_desktop_shortcut(parsed.application)
         console.print(
-            "[green]Acceso directo de Ghost Writer creado en el escritorio.[/]"
+            f"[green]Acceso directo de {_application_display_name(parsed.application)} "
+            "creado en el escritorio.[/]"
         )
         return
 
@@ -110,18 +119,22 @@ def run(args: Sequence[str] | str | None = None) -> None:
             "a intentarlo.[/]"
         )
         return
-    if parsed.background:
+    if parsed.background or page_path == "launcher":
         started = _ensure_background_server(page_path)
         _open_application(page_path, url)
         message = "Servidor iniciado" if started else "Servidor ya activo"
         console.print(f"[green]{message}; {page_path} abierto en {url}.[/]")
         console.print(
-            "[dim]Para detener los servidores gestionados: "
-            "blackbelt run apps --stop[/]"
+            "[dim]Para detener los servidores gestionados: blackbelt run apps --stop[/]"
         )
         return
 
-    application = create_app(default_page=page_path)
+    if page_path == "launcher":
+        from blackbelt.launcher_web import create_launcher_app
+
+        application = create_launcher_app()
+    else:
+        application = create_app(default_page=page_path)
     server = _BrowserOpeningServer(
         uvicorn.Config(
             application,
@@ -140,17 +153,17 @@ def run(args: Sequence[str] | str | None = None) -> None:
 def _module_main() -> None:
     arguments = sys.argv[1:]
     if arguments and arguments[0].startswith(_CHILD_ARGUMENT):
-        application = arguments[0][len(_CHILD_ARGUMENT):]
+        application = arguments[0][len(_CHILD_ARGUMENT) :]
         _run_server_child(application)
         return
     if arguments and arguments[0].startswith(_DESKTOP_ARGUMENT):
-        application = arguments[0][len(_DESKTOP_ARGUMENT):]
+        application = arguments[0][len(_DESKTOP_ARGUMENT) :]
         try:
             _load_configuration()
             _ensure_background_server(application)
             _open_application(application, _application_url(application))
         except (OSError, RuntimeError, ValueError) as exc:
-            _show_desktop_error(str(exc))
+            _show_desktop_error(str(exc), application)
         return
     run(arguments)
 
@@ -164,10 +177,8 @@ def _load_configuration() -> None:
 
 
 def _application_url(application: str) -> str:
-    return (
-        f"http://{LOOPBACK_HOST}:{_port_from_environment(application)}/"
-        f"{application}/"
-    )
+    page = "launcher" if application == "launcher" else application
+    return f"http://{LOOPBACK_HOST}:{_port_from_environment(application)}/{page}/"
 
 
 def _ensure_background_server(application: str) -> bool:
@@ -200,9 +211,8 @@ def _ensure_background_server(application: str) -> bool:
         "close_fds": True,
     }
     if os.name == "nt":
-        creation_flags = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
         )
         popen_options["creationflags"] = creation_flags
     else:
@@ -228,17 +238,13 @@ def _ensure_background_server(application: str) -> bool:
                 f"Consulta el registro local: {log_path}"
                 + (f"\n{detail}" if detail else "")
             )
-        if (
-            _blackbelt_server_is_ready(port)
-            and _application_is_ready(port, application)
+        if _blackbelt_server_is_ready(port) and _application_is_ready(
+            port, application
         ):
             return True
         time.sleep(_START_POLL_INTERVAL_SECONDS)
 
-    if (
-        _blackbelt_server_is_ready(port)
-        and _application_is_ready(port, application)
-    ):
+    if _blackbelt_server_is_ready(port) and _application_is_ready(port, application):
         return True
     if process.poll() is None:
         raise RuntimeError(
@@ -256,9 +262,15 @@ def _run_server_child(application: str) -> None:
     if application not in _APPLICATIONS:
         raise SystemExit("Aplicación interna no válida.")
     _load_configuration()
+    if application == "launcher":
+        from blackbelt.launcher_web import create_launcher_app
+
+        web_application = create_launcher_app()
+    else:
+        web_application = create_app(default_page=application)
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(default_page=application),
+            web_application,
             host=LOOPBACK_HOST,
             port=_port_from_environment(application),
             log_level="info",
@@ -274,10 +286,7 @@ def _blackbelt_server_is_ready(port: int) -> bool:
             f"http://{LOOPBACK_HOST}:{port}/healthz",
             timeout=0.5,
         )
-        return (
-            response.status_code == 200
-            and response.json() == {"status": "ok"}
-        )
+        return response.status_code == 200 and response.json() == {"status": "ok"}
     except (requests.RequestException, ValueError):
         return False
 
@@ -286,8 +295,9 @@ def _application_is_ready(port: int, application: str) -> bool:
     if application not in _APPLICATIONS:
         return False
     try:
+        page = "launcher" if application == "launcher" else application
         response = requests.get(
-            f"http://{LOOPBACK_HOST}:{port}/{application}/manifest.webmanifest",
+            f"http://{LOOPBACK_HOST}:{port}/{page}/manifest.webmanifest",
             timeout=0.5,
         )
         return response.status_code == 200
@@ -311,6 +321,7 @@ def _find_installed_pwa_shortcut(application: str) -> Path | None:
     shortcut_names = {
         "ghostwriter": ("ghost writer",),
         "meetings": ("reuniones", "blackbelt meetings"),
+        "launcher": ("blackbelt launcher",),
     }
     target_names = shortcut_names.get(application)
     if target_names is None or os.name != "nt":
@@ -318,6 +329,7 @@ def _find_installed_pwa_shortcut(application: str) -> Path | None:
     preferred_name = {
         "ghostwriter": "ghost writer local",
         "meetings": "blackbelt reuniones",
+        "launcher": "blackbelt launcher",
     }[application]
     program_directories = [
         Path(os.getenv("APPDATA", Path.home() / "AppData/Roaming"))
@@ -340,8 +352,7 @@ def _find_installed_pwa_shortcut(application: str) -> Path | None:
                 path
                 for path in directory.rglob("*.lnk")
                 if any(
-                    target_name in path.stem.casefold()
-                    for target_name in target_names
+                    target_name in path.stem.casefold() for target_name in target_names
                 )
             )
         except OSError:
@@ -453,33 +464,40 @@ def _log_tail(log_path: Path) -> str:
     return "\n".join(lines[-12:])
 
 
-def _install_desktop_shortcut() -> None:
+def _install_desktop_shortcut(application: str = "ghostwriter") -> None:
     if os.name != "nt":
         raise RuntimeError(
             "La creación automática del acceso directo requiere Windows."
         )
+    if application not in {"ghostwriter", "launcher"}:
+        raise ValueError("La aplicación no admite un acceso directo de escritorio.")
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if not pythonw.is_file():
         raise RuntimeError(
             "No se encontró pythonw.exe junto al intérprete actual. "
             "Activa el entorno Python de BlackBelt y vuelve a intentarlo."
         )
+    display_name = _application_display_name(application)
+    shortcut_argument = f"{_DESKTOP_ARGUMENT}{application}"
+    pwa_search_pattern = (
+        "*Ghost*Writer*" if application == "ghostwriter" else "*BlackBelt*Launcher*"
+    )
     script = f"""
 $desktop = [Environment]::GetFolderPath('Desktop')
-$linkPath = Join-Path $desktop 'Ghost Writer BlackBelt.lnk'
+$linkPath = Join-Path $desktop '{display_name}.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $link = $shell.CreateShortcut($linkPath)
 $link.TargetPath = '{_powershell_quote(str(pythonw.resolve()))}'
-$link.Arguments = '-m blackbelt.tools.apps {_DESKTOP_ARGUMENT}ghostwriter'
+$link.Arguments = '-m blackbelt.tools.apps {shortcut_argument}'
 $link.WorkingDirectory = '{_powershell_quote(str(Path.cwd().resolve()))}'
-$link.Description = 'Inicia BlackBelt y abre Ghost Writer como aplicación'
+$link.Description = 'Inicia BlackBelt y abre {display_name}'
 $link.WindowStyle = 7
 $programs = @(
   (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'),
   (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs')
 )
 $pwa = Get-ChildItem $programs -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue |
-  Where-Object {{ $_.BaseName -like '*Ghost*Writer*' }} |
+  Where-Object {{ $_.BaseName -like '{pwa_search_pattern}' }} |
   Select-Object -First 1
 if ($pwa) {{
   $installed = $shell.CreateShortcut($pwa.FullName)
@@ -487,9 +505,7 @@ if ($pwa) {{
 }}
 $link.Save()
 """
-    encoded_script = base64.b64encode(
-        script.encode("utf-16le")
-    ).decode("ascii")
+    encoded_script = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     result = subprocess.run(
         [
             "powershell.exe",
@@ -514,7 +530,14 @@ def _powershell_quote(value: str) -> str:
     return value.replace("'", "''")
 
 
-def _show_desktop_error(message: str) -> None:
+def _application_display_name(application: str) -> str:
+    return {
+        "ghostwriter": "Ghost Writer BlackBelt",
+        "launcher": "BlackBelt Launcher",
+    }.get(application, application)
+
+
+def _show_desktop_error(message: str, application: str = "ghostwriter") -> None:
     if os.name == "nt":
         try:
             import ctypes
@@ -522,7 +545,7 @@ def _show_desktop_error(message: str) -> None:
             ctypes.windll.user32.MessageBoxW(
                 None,
                 message,
-                "BlackBelt - Ghost Writer",
+                f"BlackBelt - {_application_display_name(application)}",
                 0x10,
             )
             return
@@ -532,26 +555,26 @@ def _show_desktop_error(message: str) -> None:
 
 
 def _port_from_environment(application: str | None = None) -> int:
-    setting = (
-        "BLACKBELT_MEETINGS_PORT"
-        if application == "meetings"
-        else "BLACKBELT_WEBAPPS_PORT"
-    )
+    setting = {
+        "launcher": "BLACKBELT_LAUNCHER_PORT",
+        "meetings": "BLACKBELT_MEETINGS_PORT",
+    }.get(application, "BLACKBELT_WEBAPPS_PORT")
     raw_value = os.getenv(setting)
     if raw_value is None and application == "meetings":
         raw_value = os.getenv("BLACKBELT_WEBAPPS_PORT")
         if raw_value is not None:
             setting = "BLACKBELT_WEBAPPS_PORT"
     if raw_value is None:
-        raw_value = "8766" if application == "meetings" else "8765"
+        raw_value = {
+            "launcher": "8767",
+            "meetings": "8766",
+        }.get(application, "8765")
     try:
         port = int(raw_value)
     except ValueError as exc:
         raise ValueError(f"{setting} debe ser un entero.") from exc
     if not 1024 <= port <= 65535:
-        raise ValueError(
-            f"{setting} debe estar entre 1024 y 65535."
-        )
+        raise ValueError(f"{setting} debe estar entre 1024 y 65535.")
     return port
 
 

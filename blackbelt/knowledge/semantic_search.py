@@ -15,6 +15,7 @@ from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import Literal, Protocol
 from urllib.parse import urlsplit
 
@@ -199,6 +200,15 @@ class SemanticSearchError(RuntimeError):
     """Raised when indexing or searching cannot be completed safely."""
 
 
+class SearchIndexCancelled(SemanticSearchError):
+    """Raised after a cooperative cancellation reaches a safe boundary."""
+
+
+def _raise_if_index_cancelled(cancelled: Event | None) -> None:
+    if cancelled is not None and cancelled.is_set():
+        raise SearchIndexCancelled("Indexación detenida por el usuario.")
+
+
 class EmbeddingProvider(Protocol):
     """Local text embedding interface, replaceable in deterministic tests."""
 
@@ -243,10 +253,12 @@ class _IndexPacer:
         work_interval_seconds: float,
         cooldown_seconds: float,
         progress_callback: Callable[[SearchIndexProgress], None] | None,
+        cancelled: Event | None,
     ) -> None:
         self._work_interval_seconds = work_interval_seconds
         self._cooldown_seconds = cooldown_seconds
         self._progress_callback = progress_callback
+        self._cancelled = cancelled
         self._work_started = time.monotonic()
         self._worked_seconds = 0.0
 
@@ -276,6 +288,8 @@ class _IndexPacer:
 
         deadline = now + self._cooldown_seconds
         while True:
+            if self._cancelled is not None and self._cancelled.is_set():
+                raise SearchIndexCancelled("Indexación detenida por el usuario.")
             remaining = max(0.0, deadline - time.monotonic())
             SemanticSearchService._notify_index_progress(
                 self._progress_callback,
@@ -300,7 +314,10 @@ class _IndexPacer:
             )
             if remaining <= 0:
                 break
-            time.sleep(min(1.0, remaining))
+            if self._cancelled is None:
+                time.sleep(min(1.0, remaining))
+            elif self._cancelled.wait(min(1.0, remaining)):
+                raise SearchIndexCancelled("Indexación detenida por el usuario.")
         self._work_started = time.monotonic()
 
 
@@ -536,6 +553,7 @@ class SemanticSearchService:
         work_interval_seconds: float = 60.0,
         cooldown_seconds: float = 60.0,
         progress_callback: Callable[[SearchIndexProgress], None] | None = None,
+        cancelled: Event | None = None,
     ) -> SearchIndexStats:
         """Hash sources, checkpoint each note, and pace embedding requests."""
         if batch_size < 1:
@@ -583,6 +601,7 @@ class SemanticSearchService:
         changed_paths: list[tuple[str, Path]] = []
         unchanged = 0
         for current, (relative, path) in enumerate(safe_paths, start=1):
+            _raise_if_index_cancelled(cancelled)
             try:
                 if path.stat().st_size > self._max_note_bytes:
                     warnings.append(f"Se omitió una nota demasiado grande: {relative}")
@@ -609,6 +628,7 @@ class SemanticSearchService:
                 ),
             )
 
+        _raise_if_index_cancelled(cancelled)
         deleted_paths = sorted(set(indexed_sources) - scanned_paths)
         removed = self._remove_indexed_paths(deleted_paths)
         batch_count = math.ceil(len(changed_paths) / batch_size)
@@ -617,6 +637,7 @@ class SemanticSearchService:
             work_interval_seconds=work_interval_seconds,
             cooldown_seconds=cooldown_seconds,
             progress_callback=progress_callback,
+            cancelled=cancelled,
         )
         for batch_index, start in enumerate(
             range(0, len(changed_paths), batch_size),
@@ -624,6 +645,7 @@ class SemanticSearchService:
         ):
             path_batch = changed_paths[start : start + batch_size]
             for relative, path in path_batch:
+                _raise_if_index_cancelled(cancelled)
                 try:
                     if path.stat().st_size > self._max_note_bytes:
                         scanned_paths.discard(relative)
@@ -660,6 +682,7 @@ class SemanticSearchService:
                     batch_count=batch_count,
                     progress_callback=progress_callback,
                     pacer=pacer,
+                    cancelled=cancelled,
                     completed_sources=indexed,
                     total_sources=len(changed_paths),
                     unchanged=unchanged,
@@ -706,6 +729,7 @@ class SemanticSearchService:
         batch_count: int,
         progress_callback: Callable[[SearchIndexProgress], None] | None,
         pacer: _IndexPacer,
+        cancelled: Event | None,
         completed_sources: int,
         total_sources: int,
         unchanged: int,
@@ -748,6 +772,7 @@ class SemanticSearchService:
                         batch_count=batch_count,
                     ),
                 )
+                _raise_if_index_cancelled(cancelled)
                 pacer.after_embedding_batch(
                     batch_index=batch_index,
                     batch_count=batch_count,
@@ -769,6 +794,8 @@ class SemanticSearchService:
                     points_selector=sorted(stale_ids),
                     wait=True,
                 )
+        except SearchIndexCancelled:
+            raise
         except (
             OSError,
             RuntimeError,

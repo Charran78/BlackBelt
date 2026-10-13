@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Literal, Protocol
 
 from blackbelt.mail import classifier as classifier_module
 from blackbelt.mail.classifier import classify_message, preclassify_newsletter
@@ -58,6 +59,16 @@ class TriageReport:
     newsletter_shortcuts: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class EmailScanProgress:
+    """One local progress update during a bounded email scan."""
+
+    stage: Literal["fetch", "classify", "complete"]
+    current: int
+    total: int
+    detail: str
+
+
 class EmailTriageService:
     def __init__(
         self,
@@ -78,10 +89,38 @@ class EmailTriageService:
         app_password: str,
         *,
         refresh: bool = False,
+        progress_callback: Callable[[EmailScanProgress], None] | None = None,
     ) -> TriageReport:
+        _report_progress(
+            progress_callback,
+            EmailScanProgress(
+                stage="fetch",
+                current=0,
+                total=0,
+                detail="Conectando con Gmail y descargando mensajes recientes.",
+            ),
+        )
         messages = self._fetcher(username, app_password, self._settings)
         report = TriageReport()
-        for message in messages:
+        _report_progress(
+            progress_callback,
+            EmailScanProgress(
+                stage="classify",
+                current=0,
+                total=len(messages),
+                detail=f"Procesando {len(messages)} mensajes.",
+            ),
+        )
+        for index, message in enumerate(messages, start=1):
+            _report_progress(
+                progress_callback,
+                EmailScanProgress(
+                    stage="classify",
+                    current=index - 1,
+                    total=len(messages),
+                    detail=f"Clasificando mensaje {index}/{len(messages)}.",
+                ),
+            )
             cache_key = _cache_key(message, self._settings.model)
             cached = None if refresh else self._read_cache(cache_key, report)
             if cached is not None:
@@ -99,6 +138,15 @@ class EmailTriageService:
                         warnings,
                     )
                 )
+                _report_progress(
+                    progress_callback,
+                    EmailScanProgress(
+                        stage="classify",
+                        current=index,
+                        total=len(messages),
+                        detail=f"Mensaje {index}/{len(messages)} · caché local.",
+                    ),
+                )
                 continue
 
             classification = preclassify_newsletter(message)
@@ -108,6 +156,18 @@ class EmailTriageService:
                     classification = self._classifier(message, self._settings)
                 except ClassificationError as exc:
                     report.failures.append(str(exc))
+                    _report_progress(
+                        progress_callback,
+                        EmailScanProgress(
+                            stage="classify",
+                            current=index,
+                            total=len(messages),
+                            detail=(
+                                f"Mensaje {index}/{len(messages)} · "
+                                "clasificación fallida."
+                            ),
+                        ),
+                    )
                     continue
             elif source == "newsletter":
                 report.newsletter_shortcuts += 1
@@ -126,6 +186,24 @@ class EmailTriageService:
                     warnings,
                 )
             )
+            _report_progress(
+                progress_callback,
+                EmailScanProgress(
+                    stage="classify",
+                    current=index,
+                    total=len(messages),
+                    detail=f"Mensaje {index}/{len(messages)} procesado.",
+                ),
+            )
+        _report_progress(
+            progress_callback,
+            EmailScanProgress(
+                stage="complete",
+                current=len(messages),
+                total=len(messages),
+                detail="Triaje finalizado.",
+            ),
+        )
         return report
 
     def _read_cache(
@@ -155,9 +233,7 @@ def _cache_key(message: MailMessage, model: str) -> str:
     payload = json.dumps(
         {
             "model": model,
-            "classifier_fingerprint": (
-                classifier_module.classifier_fingerprint()
-            ),
+            "classifier_fingerprint": (classifier_module.classifier_fingerprint()),
             "message_id": message.message_id,
             "sender": message.sender,
             "subject": message.subject,
@@ -169,6 +245,14 @@ def _cache_key(message: MailMessage, model: str) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _report_progress(
+    callback: Callable[[EmailScanProgress], None] | None,
+    event: EmailScanProgress,
+) -> None:
+    if callback is not None:
+        callback(event)
 
 
 def _classification_signals(
@@ -188,25 +272,19 @@ def _classification_signals(
             f"categoría {classification.category}: verificar antes de actuar"
         )
     if classification.security_risk in {"medio", "alto"}:
-        review_reasons.append(
-            f"riesgo de seguridad {classification.security_risk}"
-        )
-    action_is_unusual_for_category = (
-        classification.category in {"Newsletter", "Promocion"}
-        and (classification.requires_action or classification.requires_reply)
-    )
+        review_reasons.append(f"riesgo de seguridad {classification.security_risk}")
+    action_is_unusual_for_category = classification.category in {
+        "Newsletter",
+        "Promocion",
+    } and (classification.requires_action or classification.requires_reply)
     if action_is_unusual_for_category:
         review_reasons.append(
             f"acción o respuesta inesperada para {classification.category}"
         )
 
     priority_conflicts = (
-        classification.importance <= 1
-        and classification.urgency != "baja"
-    ) or (
-        classification.importance >= 4
-        and classification.urgency == "baja"
-    )
+        classification.importance <= 1 and classification.urgency != "baja"
+    ) or (classification.importance >= 4 and classification.urgency == "baja")
     if priority_conflicts:
         warnings.append(
             f"prioridad incoherente: importancia {classification.importance}, "
@@ -216,9 +294,6 @@ def _classification_signals(
 
 
 def _add_cache_warning(report: TriageReport) -> None:
-    warning = (
-        "La caché local no está disponible; el análisis continúa sin "
-        "utilizarla."
-    )
+    warning = "La caché local no está disponible; el análisis continúa sin utilizarla."
     if warning not in report.warnings:
         report.warnings.append(warning)

@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import replace
-from typing import Sequence
 
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from rich.text import Text
 
@@ -18,9 +26,13 @@ from blackbelt.mail.credentials import (
 )
 from blackbelt.mail.imap_client import MailFetchError
 from blackbelt.mail.repository import EmailCache, EmailCacheError
-from blackbelt.mail.service import EmailTriageService, TriageReport
+from blackbelt.mail.service import (
+    EmailScanProgress,
+    EmailTriageService,
+    TriageItem,
+    TriageReport,
+)
 from blackbelt.mail.settings import EmailSettings, EmailSettingsError
-
 
 console = Console()
 
@@ -104,12 +116,9 @@ def _configure() -> None:
     except (EOFError, KeyboardInterrupt):
         console.print("[dim]Configuración cancelada.[/]")
         return
+    console.print("[green]Credenciales guardadas en el almacén seguro del sistema.[/]")
     console.print(
-        "[green]Credenciales guardadas en el almacén seguro del sistema.[/]"
-    )
-    console.print(
-        "[dim]Usa una contraseña de aplicación de Google, no tu contraseña "
-        "habitual.[/]"
+        "[dim]Usa una contraseña de aplicación de Google, no tu contraseña habitual.[/]"
     )
 
 
@@ -136,7 +145,8 @@ def _scan(
             f"últimas {settings.hours} horas, máximo "
             f"{settings.message_limit} mensajes."
         )
-        report = service.scan(
+        report = _scan_with_progress(
+            service,
             credentials.username,
             credentials.app_password,
             refresh=refresh,
@@ -152,45 +162,65 @@ def _scan(
     _render_report(report)
 
 
+def _scan_with_progress(
+    service: EmailTriageService,
+    username: str,
+    app_password: str,
+    *,
+    refresh: bool,
+) -> TriageReport:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("Conectando con Gmail…", total=None)
+
+        def update_progress(event: EmailScanProgress) -> None:
+            if event.stage == "fetch":
+                progress.update(
+                    task_id,
+                    description=event.detail,
+                    total=None,
+                    completed=0,
+                )
+            else:
+                total = max(event.total, 1)
+                progress.update(
+                    task_id,
+                    description=event.detail,
+                    total=total,
+                    completed=min(event.current, total),
+                )
+
+        return service.scan(
+            username,
+            app_password,
+            refresh=refresh,
+            progress_callback=update_progress,
+        )
+
+
 def _render_report(report: TriageReport) -> None:
     if not report.items:
         console.print("[dim]No hay clasificaciones para mostrar.[/]")
     else:
-        table = Table(title="Triaje de correo")
-        table.add_column("Imp.", justify="right")
-        table.add_column("Urgencia")
-        table.add_column("Categoría")
-        table.add_column("Riesgo")
-        table.add_column("Conf.", justify="right")
-        table.add_column("Control")
-        table.add_column("Asunto")
-        table.add_column("Remitente")
-        for item in sorted(
+        ordered_items = sorted(
             report.items,
             key=lambda entry: (
                 entry.classification.importance,
                 entry.classification.confidence,
             ),
             reverse=True,
-        ):
-            classification = item.classification
-            table.add_row(
-                str(classification.importance),
-                classification.urgency,
-                classification.category,
-                classification.security_risk,
-                str(classification.confidence),
-                (
-                    "REVISAR"
-                    if item.requires_review
-                    else "AVISO"
-                    if item.warnings
-                    else ""
-                ),
-                _safe_cell(item.message.subject, 52),
-                _safe_cell(item.message.sender, 36),
-            )
-        console.print(table)
+        )
+        if console.width < 120:
+            _render_compact_report(ordered_items)
+        else:
+            _render_report_table(ordered_items)
 
         for item in report.items:
             classification = item.classification
@@ -213,8 +243,7 @@ def _render_report(report: TriageReport) -> None:
                 or classification.security_risk in {"medio", "alto"}
             ):
                 console.print(
-                    f"\n[bold]Acción sugerida[/] "
-                    f"{_safe_cell(item.message.subject, 70)}"
+                    f"\n[bold]Acción sugerida[/] {_safe_cell(item.message.subject, 70)}"
                 )
                 console.print(
                     Text.from_markup(
@@ -240,9 +269,7 @@ def _render_report(report: TriageReport) -> None:
         for index, failure in enumerate(report.failures[:5], 1):
             console.print(f"[yellow]Clasificación {index}: {failure}[/]")
         if len(report.failures) > 5:
-            console.print(
-                f"[yellow]Y {len(report.failures) - 5} errores más.[/]"
-            )
+            console.print(f"[yellow]Y {len(report.failures) - 5} errores más.[/]")
         console.print(
             "[yellow]Algunos mensajes no se clasificaron; no se han guardado "
             "resultados incompletos.[/]"
@@ -251,6 +278,63 @@ def _render_report(report: TriageReport) -> None:
         "[dim]La evaluación de phishing es orientativa y no sustituye "
         "la verificación del remitente o los enlaces.[/]"
     )
+
+
+def _render_report_table(items: list[TriageItem]) -> None:
+    table = Table(title="Triaje de correo")
+    table.add_column("Imp.", justify="right")
+    table.add_column("Urgencia")
+    table.add_column("Categoría")
+    table.add_column("Riesgo")
+    table.add_column("Conf.", justify="right")
+    table.add_column("Control")
+    table.add_column("Asunto")
+    table.add_column("Remitente")
+    for item in items:
+        classification = item.classification
+        table.add_row(
+            str(classification.importance),
+            classification.urgency,
+            classification.category,
+            classification.security_risk,
+            str(classification.confidence),
+            ("REVISAR" if item.requires_review else "AVISO" if item.warnings else ""),
+            _safe_cell(item.message.subject, 52),
+            _safe_cell(item.message.sender, 36),
+        )
+    console.print(table)
+
+
+def _render_compact_report(items: list[TriageItem]) -> None:
+    console.print("[bold]Triaje de correo · vista compacta[/]")
+    for item in items:
+        classification = item.classification
+        line = Text(
+            (
+                f"{classification.importance} · {classification.urgency} · "
+                f"{classification.category} · riesgo "
+                f"{classification.security_risk} · confianza "
+                f"{classification.confidence}%"
+            ),
+            style="bold",
+        )
+        if item.requires_review:
+            line.append(" · REVISAR", style="bold yellow")
+        elif item.warnings:
+            line.append(" · AVISO", style="yellow")
+        console.print(line)
+        console.print(
+            Text.assemble(
+                ("  Asunto: ", "bold"),
+                _safe_cell(item.message.subject, 180),
+            )
+        )
+        console.print(
+            Text.assemble(
+                ("  De: ", "bold"),
+                _safe_cell(item.message.sender, 120),
+            )
+        )
 
 
 def _safe_cell(value: str, max_length: int) -> str:

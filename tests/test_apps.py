@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -252,6 +253,32 @@ def test_background_launcher_reuses_existing_server(
     ]
 
 
+def test_launcher_defaults_to_detached_background_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(apps, "_load_configuration", lambda: None)
+    monkeypatch.setattr(apps, "_blackbelt_server_is_ready", lambda port: False)
+    monkeypatch.setattr(
+        apps,
+        "_ensure_background_server",
+        lambda application: observed.update(started=application) or True,
+    )
+    monkeypatch.setattr(
+        apps,
+        "_open_application",
+        lambda application, url: observed.update(opened=(application, url)),
+    )
+    monkeypatch.setenv("BLACKBELT_LAUNCHER_PORT", "9777")
+
+    apps.run(["launcher"])
+
+    assert observed == {
+        "started": "launcher",
+        "opened": ("launcher", "http://127.0.0.1:9777/launcher/"),
+    }
+
+
 def test_background_meetings_reuses_server_on_pwa_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -265,11 +292,13 @@ def test_background_meetings_reuses_server_on_pwa_port(
     monkeypatch.setattr(
         apps,
         "_application_is_ready",
-        lambda port, application: observed.update(
-            app_port=port,
-            application=application,
-        )
-        or True,
+        lambda port, application: (
+            observed.update(
+                app_port=port,
+                application=application,
+            )
+            or True
+        ),
     )
     monkeypatch.setattr(
         apps,
@@ -332,9 +361,10 @@ def test_background_launcher_starts_server_and_records_pid(
     assert "creationflags" in captured["kwargs"] or (
         "start_new_session" in captured["kwargs"]
     )
-    assert json.loads(
-        (tmp_path / "ghostwriter.pid").read_text(encoding="utf-8")
-    ) == {"pid": 4321, "application": "ghostwriter"}
+    assert json.loads((tmp_path / "ghostwriter.pid").read_text(encoding="utf-8")) == {
+        "pid": 4321,
+        "application": "ghostwriter",
+    }
 
 
 def test_background_start_fails_cleanly_if_child_exits(
@@ -526,11 +556,13 @@ def test_install_shortcut_uses_current_python_environment(
     monkeypatch.setattr(
         apps.subprocess,
         "run",
-        lambda command, **kwargs: observed.update(
-            command=command,
-            kwargs=kwargs,
-        )
-        or type("Result", (), {"returncode": 0, "stderr": ""})(),
+        lambda command, **kwargs: (
+            observed.update(
+                command=command,
+                kwargs=kwargs,
+            )
+            or type("Result", (), {"returncode": 0, "stderr": ""})()
+        ),
     )
     monkeypatch.chdir(tmp_path)
 
@@ -539,3 +571,36 @@ def test_install_shortcut_uses_current_python_environment(
     assert observed["command"][0] == "powershell.exe"
     assert observed["command"][-2] == "-EncodedCommand"
     assert observed["kwargs"]["check"] is False
+
+
+def test_install_launcher_shortcut_uses_pythonw_and_launcher_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    python = tmp_path / "python.exe"
+    pythonw = tmp_path / "pythonw.exe"
+    python.write_text("", encoding="utf-8")
+    pythonw.write_text("", encoding="utf-8")
+    observed: dict[str, Any] = {}
+    monkeypatch.setattr(apps.os, "name", "nt")
+    monkeypatch.setattr(apps.sys, "executable", str(python))
+    monkeypatch.setattr(
+        apps.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            observed.update(
+                command=command,
+                kwargs=kwargs,
+            )
+            or type("Result", (), {"returncode": 0, "stderr": ""})()
+        ),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    apps._install_desktop_shortcut("launcher")
+
+    script = base64.b64decode(observed["command"][-1]).decode("utf-16le")
+    assert "BlackBelt Launcher.lnk" in script
+    assert "pythonw.exe" in script
+    assert "--blackbelt-desktop-launch=launcher" in script
+    assert observed["kwargs"]["timeout"] == 20

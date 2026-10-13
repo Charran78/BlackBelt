@@ -1,0 +1,19 @@
+{
+  "name": "BlackBelt Launcher",
+  "short_name": "BlackBelt",
+  "description": "Centro de mando local de la suite BlackBelt.",
+  "start_url": "/launcher/",
+  "scope": "/launcher/",
+  "display": "standalone",
+  "background_color": "#10141d",
+  "theme_color": "#10141d",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/launcher/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

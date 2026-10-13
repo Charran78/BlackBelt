@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from io import StringIO
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
@@ -22,6 +24,7 @@ from blackbelt.knowledge.companion import (
     initialize_contract,
 )
 from blackbelt.knowledge.semantic_search import (
+    SearchHit,
     SearchIndexProgress,
     SearchIndexStats,
     SemanticSearchError,
@@ -83,6 +86,83 @@ Prefiero validar las citas antes de confiar en una síntesis.
     )
     memory.index()
     return memory
+
+
+def test_companion_index_forwards_cancellation_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    memory = CompanionMemory(
+        tmp_path / "vault",
+        tmp_path / "index",
+        tmp_path / "contract.md",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+    )
+    cancelled = Event()
+    stats = SearchIndexStats(0, 0, 0, 0, 0, ())
+    observed: dict[str, object] = {}
+
+    def fake_index(**kwargs: Any) -> SearchIndexStats:
+        observed.update(kwargs)
+        return stats
+
+    monkeypatch.setattr(memory._search, "index", fake_index)
+
+    assert memory.index(cancelled=cancelled) == stats
+    assert observed["cancelled"] is cancelled
+
+
+def test_search_returns_hits_without_reading_companion_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    expected = SearchHit(
+        path="024 - CHAT_BD/Conversación.md",
+        title="Conversación",
+        content="Recuerdo local.",
+        wikilinks=(),
+        score=0.5,
+        semantic_rank=1,
+        lexical_rank=None,
+        provenance=None,
+    )
+    observed: dict[str, object] = {}
+
+    class FakeSearch:
+        def search(
+            self,
+            query: str,
+            *,
+            limit: int,
+            progress_callback: Callable[[str], None] | None = None,
+        ) -> list[SearchHit]:
+            observed["query"] = query
+            observed["limit"] = limit
+            observed["progress_callback"] = progress_callback
+            return [expected]
+
+    memory = CompanionMemory(
+        tmp_path / "vault",
+        tmp_path / "index",
+        tmp_path / "missing-contract.md",
+        model="test-embedding-model",
+        embedder=DeterministicEmbedder(),
+    )
+    monkeypatch.setattr(memory, "_search", FakeSearch())
+    events: list[str] = []
+
+    results = memory.search(
+        "ORBITA",
+        limit=3,
+        progress_callback=events.append,
+    )
+
+    assert results == [expected]
+    assert observed["query"] == "ORBITA"
+    assert observed["limit"] == 3
+    assert callable(observed["progress_callback"])
+    assert events == []
 
 
 def test_companion_chat_timeout_argument_uses_long_generation_default() -> None:
@@ -587,7 +667,7 @@ def test_cloud_cancel_does_not_call_model(
     )
     client = SimpleNamespace(
         list=lambda: {"models": [{"model": "gpt-oss:120b-cloud"}]},
-        chat=lambda **kwargs: pytest.fail("Cloud no debe llamarse")
+        chat=lambda **kwargs: pytest.fail("Cloud no debe llamarse"),
     )
     memory = SimpleNamespace(prepare_turn=lambda query, limit: turn)
 
@@ -614,7 +694,7 @@ def test_cloud_confirmation_sends_the_previewed_payload_only(
         list=lambda: {"models": [{"model": "gpt-oss:120b-cloud"}]},
         chat=lambda **kwargs: (
             sent.append(kwargs) or {"message": {"content": "Respuesta cloud."}}
-        )
+        ),
     )
     memory = SimpleNamespace(prepare_turn=lambda query, limit: turn)
 

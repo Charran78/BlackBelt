@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import httpx
 import pytest
 from rich.console import Console
 
+from blackbelt.core import config as cfg
 from blackbelt.knowledge import semantic_search
 from blackbelt.knowledge.provenance import (
     SourceProvenance,
@@ -21,6 +23,7 @@ from blackbelt.knowledge.provenance import (
 from blackbelt.knowledge.semantic_search import (
     OllamaEmbeddingProvider,
     SearchHit,
+    SearchIndexCancelled,
     SemanticSearchError,
     SemanticSearchService,
 )
@@ -112,6 +115,51 @@ def test_index_checkpoints_each_note_and_resumes_after_embedding_failure(
     resumed = service.index(batch_size=2)
 
     assert resumed.indexed == 2
+    assert resumed.unchanged == 1
+
+
+def test_index_cancellation_preserves_completed_note_checkpoints(
+    tmp_path: Path,
+) -> None:
+    vault = tmp_path / "vault"
+    for index in range(2):
+        _write_note(
+            vault,
+            f"024 - CHAT_BD/Conversation {index}.md",
+            f"# Conversación {index}\n\nContenido del turno {index}.",
+        )
+    embedder = DeterministicEmbedder()
+    service = SemanticSearchService(
+        vault,
+        tmp_path / "index",
+        model="test-embedding-model",
+        embedder=embedder,
+        include_dirs=("024 - CHAT_BD",),
+    )
+    cancelled = Event()
+
+    def cancel_after_checkpoint(
+        event: semantic_search.SearchIndexProgress,
+    ) -> None:
+        if event.detail.startswith("Checkpoint confirmado:"):
+            cancelled.set()
+
+    with pytest.raises(SearchIndexCancelled):
+        service.index(
+            batch_size=1,
+            progress_callback=cancel_after_checkpoint,
+            cancelled=cancelled,
+        )
+
+    with closing(service._open_database()) as database:
+        checkpointed = database.execute(
+            "SELECT COUNT(*) FROM sources",
+        ).fetchone()[0]
+    assert checkpointed == 1
+
+    resumed = service.index(batch_size=1)
+
+    assert resumed.indexed == 1
     assert resumed.unchanged == 1
 
 
@@ -1381,3 +1429,175 @@ def test_search_cli_keeps_full_source_path_visible(
     assert "SHA-256 fuente: source-hash" in normalized_output
     assert "SHA-256 fragmento: chunk-hash" in normalized_output
     assert "no una probabilidad" in rendered
+
+
+def test_work_search_scope_is_an_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert "003 - CURSOS" in cfg.SEARCH_SOURCE_DIRS
+    assert "017 - BIBLIOTECA" in cfg.SEARCH_SOURCE_DIRS
+    assert "018 - NEWSLETTERS" not in cfg.SEARCH_SOURCE_DIRS
+    assert "024 - CHAT_BD" not in cfg.SEARCH_SOURCE_DIRS
+    assert "025 - MIS_NOTAS" not in cfg.SEARCH_SOURCE_DIRS
+    assert cfg.SEARCH_WORK_INDEX_DIR == cfg.SEARCH_INDEX_DIR / "work"
+    observed: dict[str, object] = {}
+
+    class FakeSearchService:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            observed["args"] = args
+            observed["kwargs"] = kwargs
+
+    monkeypatch.setattr(search_cli, "SemanticSearchService", FakeSearchService)
+    search_cli._make_work_search()
+
+    assert observed["args"] == (cfg.OBSIDIAN_VAULT, cfg.SEARCH_WORK_INDEX_DIR)
+    assert observed["kwargs"]["include_dirs"] == cfg.SEARCH_SOURCE_DIRS
+
+
+def test_default_query_scope_uses_only_work_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = SearchHit(
+        path="001 - PROYECTOS/ORBITA.md",
+        title="ORBITA",
+        content="Referencia de trabajo.",
+        wikilinks=(),
+        score=0.8,
+        semantic_rank=1,
+        lexical_rank=1,
+        provenance=None,
+    )
+    observed: list[str] = []
+
+    class FakeWorkSearch:
+        def search(self, query: str, *, limit: int) -> list[SearchHit]:
+            observed.append(query)
+            return [result]
+
+    monkeypatch.setattr(search_cli, "_make_work_search", FakeWorkSearch)
+    monkeypatch.setattr(
+        search_cli,
+        "CompanionMemory",
+        lambda *args, **kwargs: pytest.fail(
+            "La búsqueda de trabajo no debe consultar Companion."
+        ),
+    )
+    monkeypatch.setattr(search_cli, "_render_search_results", lambda results: None)
+
+    search_cli.run(["query", "ORBITA"])
+
+    assert observed == ["ORBITA"]
+
+
+def test_all_scope_queries_work_and_companion_as_separate_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_result = SearchHit(
+        path="001 - PROYECTOS/ORBITA.md",
+        title="ORBITA en el proyecto",
+        content="Referencia de trabajo.",
+        wikilinks=(),
+        score=0.8,
+        semantic_rank=1,
+        lexical_rank=1,
+        provenance=None,
+    )
+    memory_result = SearchHit(
+        path="024 - CHAT_BD/Conversación sobre ORBITA.md",
+        title="Conversación sobre ORBITA",
+        content="Referencia de memoria.",
+        wikilinks=(),
+        score=0.7,
+        semantic_rank=1,
+        lexical_rank=1,
+        provenance=None,
+    )
+    observed: dict[str, object] = {}
+
+    class FakeWorkSearch:
+        def search(self, query: str, *, limit: int) -> list[SearchHit]:
+            observed["work_query"] = (query, limit)
+            return [work_result]
+
+    class FakeCompanion:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            observed["companion_init"] = True
+
+        def search(self, query: str, *, limit: int) -> list[SearchHit]:
+            observed["companion_query"] = (query, limit)
+            return [memory_result]
+
+    rendered: list[tuple[list[SearchHit], str | None]] = []
+    monkeypatch.setattr(search_cli, "_make_work_search", FakeWorkSearch)
+    monkeypatch.setattr(search_cli, "CompanionMemory", FakeCompanion)
+    monkeypatch.setattr(
+        search_cli,
+        "_render_search_results",
+        lambda results, *, heading=None: rendered.append((results, heading)),
+    )
+
+    search_cli.run(["query", "qué", "es", "ORBITA?", "--scope", "all"])
+
+    assert observed["work_query"] == ("qué es ORBITA?", 5)
+    assert observed["companion_query"] == ("qué es ORBITA?", 5)
+    assert observed["companion_init"] is True
+    assert rendered == [
+        ([work_result], "Bóveda de trabajo · resultados híbridos"),
+        ([memory_result], "Memoria Companion · conversaciones y notas"),
+    ]
+
+
+def test_search_index_cli_displays_progress_without_running_embeddings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+
+    class FakeWorkSearch:
+        def index(
+            self,
+            *,
+            progress_callback: Callable[
+                [semantic_search.SearchIndexProgress],
+                None,
+            ],
+        ) -> semantic_search.SearchIndexStats:
+            progress_callback(
+                semantic_search.SearchIndexProgress(
+                    stage="scan",
+                    current=1,
+                    total=1,
+                    detail="Comparando hashes: 001 - PROYECTOS/ORBITA.md",
+                )
+            )
+            progress_callback(
+                semantic_search.SearchIndexProgress(
+                    stage="complete",
+                    current=1,
+                    total=1,
+                    detail="Índice guardado y sincronizado.",
+                    indexed=1,
+                )
+            )
+            return semantic_search.SearchIndexStats(
+                scanned=1,
+                indexed=1,
+                unchanged=0,
+                removed=0,
+                skipped=0,
+                warnings=(),
+            )
+
+    monkeypatch.setattr(
+        search_cli,
+        "console",
+        Console(file=output, width=120, force_terminal=False),
+    )
+
+    search_cli._run_index(FakeWorkSearch())
+
+    rendered = " ".join(output.getvalue().split())
+    assert "Indexación completada" in rendered
+    assert "Índice local de trabajo" in rendered
+    assert "003 - CURSOS" in rendered
+    assert "017 - BIBLIOTECA" in rendered
+    assert "018 - NEWSLETTERS" not in rendered

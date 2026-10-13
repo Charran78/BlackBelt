@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import Any
 
 from blackbelt.core import config as cfg
@@ -159,12 +160,28 @@ class CompanionMemory:
         work_interval_seconds: float = cfg.COMPANION_INDEX_WORK_INTERVAL_SECONDS,
         cooldown_seconds: float = cfg.COMPANION_INDEX_COOLDOWN_SECONDS,
         progress_callback: Callable[[SearchIndexProgress], None] | None = None,
+        cancelled: Event | None = None,
     ) -> SearchIndexStats:
         """Update the dedicated index for the configured memory folders."""
         return self._search.index(
             batch_size=batch_size,
             work_interval_seconds=work_interval_seconds,
             cooldown_seconds=cooldown_seconds,
+            progress_callback=progress_callback,
+            cancelled=cancelled,
+        )
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> list[SearchHit]:
+        """Search Companion memory without preparing a model prompt."""
+        return self._search.search(
+            query,
+            limit=limit,
             progress_callback=progress_callback,
         )
 
