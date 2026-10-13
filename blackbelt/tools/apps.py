@@ -20,11 +20,12 @@ import uvicorn
 from dotenv import load_dotenv
 from rich.console import Console
 
+from blackbelt.core import config as cfg
 from blackbelt.webapps import create_app
 
 console = Console()
 LOOPBACK_HOST = "127.0.0.1"
-_APPLICATIONS = ("soma", "ghostwriter", "meetings", "plan")
+_APPLICATIONS = ("soma", "ghostwriter", "meetings", "plan", "companion")
 _CHILD_ARGUMENT = "--blackbelt-webapps-child="
 _DESKTOP_ARGUMENT = "--blackbelt-desktop-launch="
 _START_TIMEOUT_SECONDS = 20.0
@@ -80,7 +81,7 @@ def run(args: Sequence[str] | str | None = None) -> None:
         return
     if parsed.application is None:
         parser.error(
-            "indica soma, ghostwriter, meetings, plan o usa --stop."
+            "indica soma, ghostwriter, meetings, plan, companion o usa --stop."
         )
     if parsed.install_shortcut:
         if parsed.application != "ghostwriter":
@@ -159,6 +160,7 @@ def _load_configuration() -> None:
     personal_config = Path.cwd() / ".env.personalizaciones"
     if personal_config.is_file():
         load_dotenv(personal_config, override=True)
+    cfg.JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
 
 
 def _application_url(application: str) -> str:

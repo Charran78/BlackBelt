@@ -10,7 +10,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 
 from blackbelt.knowledge import plan_service
 from blackbelt.knowledge.plan import (
@@ -229,7 +228,6 @@ def _service(
         vault=vault,
         drafts_dir=tmp_path / "home" / ".blackbelt" / "plans" / "drafts",
         audit_file=tmp_path / "home" / ".blackbelt" / "audit" / "plan.jsonl",
-        cloud_review_file=tmp_path / "cloud-review.yaml",
         model_call=model_call or (lambda _system, _user, _cloud: _model_response()),
     )
 
@@ -731,7 +729,6 @@ def test_default_draft_flow_uses_review_folder_and_moves_on_approval(
     service = PlanService(
         vault=vault,
         audit_file=tmp_path / "audit" / "plan.jsonl",
-        cloud_review_file=tmp_path / "cloud-review.yaml",
         model_call=lambda _system, _user, _cloud: _model_response(),
     )
 
@@ -1342,43 +1339,12 @@ def test_approval_blocks_if_a_source_changed_after_prepare(
     assert not (service.vault / "021 - PLANES_APROBADOS").exists()
 
 
-def test_cloud_is_fail_closed_without_documented_provider_review(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(plan_service.cfg, "PLAN_CLOUD_MODEL", "gpt-oss:120b-cloud")
-    service = _service(tmp_path)
-
-    with pytest.raises(PlanServiceError, match="revisión inicial"):
-        service.prepare(
-            client="CL001",
-            project="PROY001",
-            proposal="PR001",
-            engine="cloud",
-        )
-
-
 def test_cloud_cancel_audits_attempt_without_payload_or_request_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(plan_service.cfg, "PLAN_CLOUD_MODEL", "gpt-oss:120b-cloud")
     service = _service(tmp_path)
-    service.cloud_review_file.write_text(
-        yaml.safe_dump(
-            {
-                "proveedor": "ollama",
-                "modelo": "gpt-oss:120b-cloud",
-                "revisado": True,
-                "fecha_revision": "2026-10-06",
-                "url_terminos": "https://ollama.com/terms",
-                "region": "desconocida",
-                "retencion": "desconocida",
-                "entrenamiento": "verificado",
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(
         plan_service.Confirm,
         "ask",
@@ -1413,21 +1379,6 @@ def test_cloud_success_previews_request_and_audits_only_hashes(
         return _model_response()
 
     service = _service(tmp_path, fake_model)
-    service.cloud_review_file.write_text(
-        yaml.safe_dump(
-            {
-                "proveedor": "ollama",
-                "modelo": "gpt-oss:120b-cloud",
-                "revisado": True,
-                "fecha_revision": "2026-10-06",
-                "url_terminos": "https://ollama.com/terms",
-                "region": "desconocida",
-                "retencion": "desconocida",
-                "entrenamiento": "verificado",
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(
         plan_service.Confirm,
         "ask",

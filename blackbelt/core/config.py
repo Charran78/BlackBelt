@@ -62,16 +62,16 @@ COMPANION_INDEX_DIR = Path(
         str(Path.home() / ".blackbelt" / "companion" / "search"),
     )
 ).expanduser()
+COMPANION_PROFILE_DIR = Path(
+    os.getenv(
+        "BLACKBELT_COMPANION_PROFILE_DIR",
+        str(Path.home() / ".blackbelt" / "companion" / "agents"),
+    )
+).expanduser()
 COMPANION_CONTRACT_FILE = Path(
     os.getenv(
         "COMPANION_CONTRACT_FILE",
         str(Path.home() / ".blackbelt" / "companion" / "contract.md"),
-    )
-).expanduser()
-COMPANION_CLOUD_REVIEW_FILE = Path(
-    os.getenv(
-        "COMPANION_CLOUD_REVIEW_FILE",
-        str(Path.home() / ".blackbelt" / "plan-cloud-review.yaml"),
     )
 ).expanduser()
 COMPANION_CONVERSATION_DIR = "024 - CHAT_BD"
@@ -102,6 +102,7 @@ COMPANION_CLOUD_MODEL = os.getenv(
     "COMPANION_CLOUD_MODEL",
     os.getenv("PLAN_CLOUD_MODEL", "gpt-oss:120b-cloud"),
 ).strip()
+JINA_API_KEY = os.getenv("JINA_API_KEY", "").strip()
 COMPANION_NUM_CTX = int(os.getenv("COMPANION_NUM_CTX", "4096"))
 COMPANION_NUM_PREDICT = int(os.getenv("COMPANION_NUM_PREDICT", "1024"))
 COMPANION_GENERATION_TIMEOUT_SECONDS = int(
@@ -117,12 +118,6 @@ PLAN_AUDIT_FILE = Path(
     os.getenv(
         "BLACKBELT_PLAN_AUDIT_FILE",
         str(Path.home() / ".blackbelt" / "audit" / "plan.jsonl"),
-    )
-).expanduser()
-PLAN_CLOUD_REVIEW_FILE = Path(
-    os.getenv(
-        "BLACKBELT_PLAN_CLOUD_REVIEW_FILE",
-        str(Path.home() / ".blackbelt" / "plan-cloud-review.yaml"),
     )
 ).expanduser()
 PLAN_LOCAL_MODEL = os.getenv("PLAN_LOCAL_MODEL", "qwen2.5:1.5b").strip()

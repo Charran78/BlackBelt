@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-import yaml
 from rich.console import Console
 
 from blackbelt.core import config as cfg
@@ -21,7 +20,6 @@ from blackbelt.knowledge.companion import (
     DeepReadWindow,
     PreparedTurn,
     initialize_contract,
-    validate_cloud_review,
 )
 from blackbelt.knowledge.semantic_search import (
     SearchIndexProgress,
@@ -255,17 +253,19 @@ def test_streaming_chat_rejects_empty_model_responses(streaming: bool) -> None:
             response = {"message": {"content": ""}}
             return iter([response]) if streaming else response
 
-    with companion_cli._interaction_progress() as (progress, task_id):
-        with pytest.raises(TypeError, match="sin devolver texto"):
-            companion_cli._streaming_chat_text(
-                EmptyResponseClient(),
-                model="gemma4:e2b",
-                messages=({"role": "user", "content": "Pregunta"},),
-                keep_alive="2m",
-                options={},
-                progress=progress,
-                task_id=task_id,
-            )
+    with (
+        companion_cli._interaction_progress() as (progress, task_id),
+        pytest.raises(TypeError, match="sin devolver texto"),
+    ):
+        companion_cli._streaming_chat_text(
+            EmptyResponseClient(),
+            model="gemma4:e2b",
+            messages=({"role": "user", "content": "Pregunta"},),
+            keep_alive="2m",
+            options={},
+            progress=progress,
+            task_id=task_id,
+        )
 
 
 def test_companion_retrieves_local_evidence_with_speaker_and_citations(
@@ -467,34 +467,6 @@ def test_cloud_payload_uses_aliases_without_local_paths(tmp_path: Path) -> None:
     assert turn.references[0].path in str(turn.references)
 
 
-def test_cloud_review_fails_closed_and_matches_configured_model(
-    tmp_path: Path,
-) -> None:
-    review_path = tmp_path / "cloud-review.yaml"
-    review = {
-        "proveedor": "ollama",
-        "modelo": "gpt-oss:120b-cloud",
-        "revisado": True,
-        "fecha_revision": "2026-10-08",
-        "url_terminos": "https://ollama.com/terms",
-        "region": "documentada",
-        "retencion": "documentada",
-        "entrenamiento": "documentado",
-    }
-    review_path.write_text(
-        yaml.safe_dump(review, allow_unicode=True),
-        encoding="utf-8",
-    )
-
-    assert validate_cloud_review(review_path, "gpt-oss:120b-cloud") == review
-    with pytest.raises(ValueError, match="coincidir"):
-        validate_cloud_review(review_path, "otro-modelo:cloud")
-
-    review_path.unlink()
-    with pytest.raises(ValueError, match="falta la revisión"):
-        validate_cloud_review(review_path, "gpt-oss:120b-cloud")
-
-
 def test_contract_initialization_never_overwrites_existing_content(
     tmp_path: Path,
 ) -> None:
@@ -599,29 +571,11 @@ def test_index_cli_renders_scan_embedding_checkpoint_and_cooldown_progress(
 
 
 def test_cloud_cancel_does_not_call_model(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from blackbelt.core import config as cfg
 
-    review_path = tmp_path / "cloud-review.yaml"
-    review_path.write_text(
-        yaml.safe_dump(
-            {
-                "proveedor": "ollama",
-                "modelo": "gpt-oss:120b-cloud",
-                "revisado": True,
-                "fecha_revision": "2026-10-08",
-                "url_terminos": "https://ollama.com/terms",
-                "region": "documentada",
-                "retencion": "documentada",
-                "entrenamiento": "documentado",
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(cfg, "COMPANION_CLOUD_MODEL", "gpt-oss:120b-cloud")
-    monkeypatch.setattr(cfg, "COMPANION_CLOUD_REVIEW_FILE", review_path)
     monkeypatch.setattr(companion_cli.Confirm, "ask", lambda *args, **kwargs: False)
 
     turn = PreparedTurn(
@@ -632,6 +586,7 @@ def test_cloud_cancel_does_not_call_model(
         references=(),
     )
     client = SimpleNamespace(
+        list=lambda: {"models": [{"model": "gpt-oss:120b-cloud"}]},
         chat=lambda **kwargs: pytest.fail("Cloud no debe llamarse")
     )
     memory = SimpleNamespace(prepare_turn=lambda query, limit: turn)
@@ -640,29 +595,11 @@ def test_cloud_cancel_does_not_call_model(
 
 
 def test_cloud_confirmation_sends_the_previewed_payload_only(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from blackbelt.core import config as cfg
 
-    review_path = tmp_path / "cloud-review.yaml"
-    review_path.write_text(
-        yaml.safe_dump(
-            {
-                "proveedor": "ollama",
-                "modelo": "gpt-oss:120b-cloud",
-                "revisado": True,
-                "fecha_revision": "2026-10-08",
-                "url_terminos": "https://ollama.com/terms",
-                "region": "documentada",
-                "retencion": "documentada",
-                "entrenamiento": "documentado",
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setattr(cfg, "COMPANION_CLOUD_MODEL", "gpt-oss:120b-cloud")
-    monkeypatch.setattr(cfg, "COMPANION_CLOUD_REVIEW_FILE", review_path)
     monkeypatch.setattr(companion_cli.Confirm, "ask", lambda *args, **kwargs: True)
 
     turn = PreparedTurn(
@@ -674,6 +611,7 @@ def test_cloud_confirmation_sends_the_previewed_payload_only(
     )
     sent: list[dict[str, object]] = []
     client = SimpleNamespace(
+        list=lambda: {"models": [{"model": "gpt-oss:120b-cloud"}]},
         chat=lambda **kwargs: (
             sent.append(kwargs) or {"message": {"content": "Respuesta cloud."}}
         )

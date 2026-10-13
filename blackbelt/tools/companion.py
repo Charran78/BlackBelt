@@ -35,8 +35,8 @@ from blackbelt.knowledge.companion import (
     DeepReadWindow,
     MemoryReference,
     initialize_contract,
-    validate_cloud_review,
 )
+from blackbelt.knowledge.companion_cloud import get_cloud_model
 from blackbelt.knowledge.semantic_search import (
     SearchIndexProgress,
     SearchIndexStats,
@@ -260,7 +260,6 @@ def _argument_parser() -> argparse.ArgumentParser:
         "contract-init",
         help="Crea el contrato inicial sin sobrescribir uno existente.",
     )
-
     chat_parser = subparsers.add_parser(
         "chat",
         help="Abre una conversación local con recuperación de memoria.",
@@ -624,14 +623,26 @@ def _ask_cloud(
     limit: int,
 ) -> None:
     model = cfg.COMPANION_CLOUD_MODEL
-    validate_cloud_review(cfg.COMPANION_CLOUD_REVIEW_FILE, model)
+    if get_cloud_model(model) is None:
+        raise ValueError(
+            "El modelo Cloud no pertenece a la allowlist de Companion."
+        )
+    response = client.list()
+    raw_models = getattr(response, "models", None)
+    if raw_models is None and isinstance(response, dict):
+        raw_models = response.get("models")
+    registered = {_model_name(item) for item in raw_models or []}
+    if model not in registered:
+        raise ValueError(
+            f"El modelo no está registrado en Ollama; ejecuta `ollama run {model}`."
+        )
     turn = memory.prepare_turn(query, limit=limit)
     payload = turn.cloud_payload(model=model, options=_model_options())
 
     console.print(
-        "[bold yellow]Comparación Cloud · revisión obligatoria[/]\n"
-        "Los pasajes se originan en tu bóveda. Revisa el JSON completo; "
-        "el alias del payload no incluye rutas locales.",
+        "[bold yellow]Comparación Cloud · sesión Ollama[/]\n"
+        "La cuota y los posibles cargos dependen de tu cuenta Ollama. "
+        "Revisa el JSON completo antes de enviarlo.",
         markup=False,
     )
     _render_references(turn.references)
@@ -648,7 +659,6 @@ def _ask_cloud(
     response = client.chat(**payload)
     console.print(_response_text(response), markup=False)
     _render_references(turn.references)
-
 
 def _deep_read_answer(
     memory: CompanionMemory,

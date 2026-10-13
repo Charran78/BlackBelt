@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 from fastapi.testclient import TestClient
 
 from blackbelt import webapps
@@ -96,27 +95,10 @@ def _create_service(root: Path) -> tuple[PlanService, Path]:
         encoding="utf-8",
     )
 
-    review_file = root / "plan-cloud-review.yaml"
-    review_file.write_text(
-        yaml.safe_dump(
-            {
-                "proveedor": "ollama",
-                "modelo": "gpt-oss:120b-cloud",
-                "revisado": True,
-                "fecha_revision": "2026-10-06",
-                "url_terminos": "https://ollama.com/terms",
-                "region": "verificada",
-                "retencion": "verificada",
-                "entrenamiento": "verificado",
-            }
-        ),
-        encoding="utf-8",
-    )
     service = PlanService(
         vault=vault,
         drafts_dir=vault / "022 - PLANES_BORRADOR",
         audit_file=root / "audit" / "plan.jsonl",
-        cloud_review_file=review_file,
         model_call=lambda _system, _user, _cloud: "{}",
     )
     return service, draft_path
@@ -157,11 +139,6 @@ def _enable_cloud(
         plan_service.cfg,
         "PLAN_CLOUD_MODEL",
         "gpt-oss:120b-cloud",
-    )
-    monkeypatch.setattr(
-        plan_service.cfg,
-        "PLAN_CLOUD_REVIEW_FILE",
-        service.cloud_review_file,
     )
 
 
@@ -463,6 +440,66 @@ def test_cloud_pwa_requires_confirmation_then_selective_apply(
     assert replayed.status_code == 409
 
 
+def test_plan_cloud_generation_uses_ollama_account_without_balance_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, draft_path = _create_service(tmp_path)
+    _enable_cloud(monkeypatch, service)
+    original = draft_path.read_text(encoding="utf-8")
+    model_calls: list[bool] = []
+    service._model_call = lambda _system, _user, cloud: (
+        model_calls.append(cloud) or _cloud_response()
+    )
+    monkeypatch.setattr(webapps, "_plan_service", lambda _request: service)
+    client = TestClient(
+        webapps.create_app(obsidian_root=service.vault),
+        base_url="http://127.0.0.1",
+    )
+
+    preview = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/preview",
+        json={},
+    )
+    assert preview.status_code == 200
+    generated = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/generate",
+        json={"token": preview.json()["token"], "confirm": True},
+    )
+
+    assert generated.status_code == 200
+    assert model_calls == [True]
+    assert draft_path.read_text(encoding="utf-8") == original
+
+
+def test_plan_cloud_preview_rejects_models_outside_free_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = _create_service(tmp_path)
+    _enable_cloud(monkeypatch, service)
+    paid_model = "kimi-k2.7-code:cloud"
+    monkeypatch.setattr(plan_service.cfg, "PLAN_CLOUD_MODEL", paid_model)
+    model_calls: list[bool] = []
+    service._model_call = lambda _system, _user, cloud: (
+        model_calls.append(cloud) or _cloud_response()
+    )
+    monkeypatch.setattr(webapps, "_plan_service", lambda _request: service)
+    client = TestClient(
+        webapps.create_app(obsidian_root=service.vault),
+        base_url="http://127.0.0.1",
+    )
+
+    response = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/preview",
+        json={},
+    )
+
+    assert response.status_code == 409
+    assert "catálogo Cloud permitido" in response.json()["detail"]
+    assert model_calls == []
+
+
 def test_cloud_api_rejects_replay_and_cancel_during_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -526,12 +563,11 @@ def test_cloud_api_rejects_replay_and_cancel_during_generation(
     assert replayed.status_code == 409
 
 
-def test_cloud_api_requires_current_review_before_preview(
+def test_cloud_api_previews_and_generates_without_review_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, _ = _create_service(tmp_path)
-    service.cloud_review_file = tmp_path / "missing-review.yaml"
     model_calls: list[bool] = []
     service._model_call = lambda _system, _user, cloud: (
         model_calls.append(cloud) or _cloud_response()
@@ -542,10 +578,16 @@ def test_cloud_api_requires_current_review_before_preview(
         base_url="http://127.0.0.1",
     )
 
-    response = client.post(
+    preview = client.post(
         "/api/plan/drafts/PLAN-001/cloud-improve/preview",
         json={},
     )
 
-    assert response.status_code == 503
+    assert preview.status_code == 200
     assert model_calls == []
+    generated = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/generate",
+        json={"token": preview.json()["token"], "confirm": True},
+    )
+    assert generated.status_code == 200
+    assert model_calls == [True]

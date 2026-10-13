@@ -11,7 +11,7 @@ import threading
 import time
 import unicodedata
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import datetime
 from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path, PureWindowsPath
@@ -29,7 +29,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from blackbelt.companion_web import router as companion_router
 from blackbelt.core import config as cfg
+from blackbelt.knowledge.companion_attachments import AttachmentStore
+from blackbelt.knowledge.companion_cloud import get_cloud_model
 from blackbelt.knowledge.meeting_prep import (
     AmbiguousMeetingClientError,
     MeetingClientNotFoundError,
@@ -56,6 +59,8 @@ from blackbelt.knowledge.project_hub import (
 
 LOGGER = logging.getLogger(__name__)
 _MAX_REQUEST_BYTES = 64 * 1024
+_MAX_ATTACHMENT_REQUEST_BYTES = 9 * 1024 * 1024
+_MAX_COMPANION_SOURCE_REQUEST_BYTES = 256 * 1024
 _MAX_REDDIT_FEED_BYTES = 2 * 1024 * 1024
 _MAX_MEETING_SOURCES = 25
 _MAX_MEETING_SOURCE_CHARS = 12000
@@ -366,9 +371,16 @@ def create_app(
     assets_root: Path | None = None,
     obsidian_root: Path | None = None,
 ) -> FastAPI:
-    if default_page not in {"soma", "ghostwriter", "meetings", "plan"}:
+    if default_page not in {
+        "soma",
+        "ghostwriter",
+        "meetings",
+        "plan",
+        "companion",
+    }:
         raise ValueError(
-            "La página inicial debe ser 'soma', 'ghostwriter', 'meetings' o 'plan'."
+            "La página inicial debe ser 'soma', 'ghostwriter', 'meetings', "
+            "'plan' o 'companion'."
         )
     app = FastAPI(
         title="BlackBelt Local Apps",
@@ -392,6 +404,13 @@ def create_app(
     app.state.project_hub_preview_lock = threading.Lock()
     app.state.plan_cloud_improvements = {}
     app.state.plan_cloud_improvement_lock = threading.Lock()
+    app.state.companion_chat_lock = threading.Lock()
+    app.state.companion_deep_previews = {}
+    app.state.companion_deep_preview_lock = threading.Lock()
+    app.state.companion_cloud_previews = {}
+    app.state.companion_cloud_preview_lock = threading.Lock()
+    app.state.companion_attachment_store = AttachmentStore()
+    app.include_router(companion_router)
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
@@ -473,6 +492,53 @@ def create_app(
         return _webapp_file(
             "plan",
             "plan-sw.js",
+            "application/javascript",
+            no_cache=True,
+        )
+
+    @app.get("/companion", include_in_schema=False)
+    @app.get("/companion/", include_in_schema=False)
+    async def companion_page() -> FileResponse:
+        return _html_response(
+            _asset_path(app.state.assets_root, "companion"),
+            no_cache=True,
+        )
+
+    @app.get("/companion/manifest.webmanifest", include_in_schema=False)
+    async def companion_manifest() -> FileResponse:
+        return _webapp_file(
+            "companion",
+            "manifest.webmanifest",
+            "application/manifest+json",
+        )
+
+    @app.get("/companion/icons/icon.svg", include_in_schema=False)
+    async def companion_icon() -> FileResponse:
+        return _webapp_file("companion", "icons/icon.svg", "image/svg+xml")
+
+    @app.get("/companion/styles.css", include_in_schema=False)
+    async def companion_styles() -> FileResponse:
+        return _webapp_file(
+            "companion",
+            "styles.css",
+            "text/css; charset=utf-8",
+            no_cache=True,
+        )
+
+    @app.get("/companion/app.js", include_in_schema=False)
+    async def companion_script() -> FileResponse:
+        return _webapp_file(
+            "companion",
+            "app.js",
+            "application/javascript",
+            no_cache=True,
+        )
+
+    @app.get("/companion/companion-sw.js", include_in_schema=False)
+    async def companion_service_worker() -> FileResponse:
+        return _webapp_file(
+            "companion",
+            "companion-sw.js",
             "application/javascript",
             no_cache=True,
         )
@@ -800,6 +866,15 @@ def create_app(
         response: Response,
     ) -> PlanCloudImprovementPreviewResponse:
         response.headers["Cache-Control"] = "no-store"
+        configured_model = cfg.PLAN_CLOUD_MODEL
+        if get_cloud_model(configured_model) is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Plan Cloud solo admite modelos del catálogo Cloud permitido "
+                    "por BlackBelt."
+                ),
+            )
         service = _plan_service(request)
         try:
             draft = await run_in_threadpool(service.read_draft, plan_id)
@@ -818,6 +893,15 @@ def create_app(
                 detail="El plan no está en la carpeta de revisión de Obsidian.",
             ) from exc
 
+        model = preview.request.get("model")
+        if not isinstance(model, str) or get_cloud_model(model) is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Plan Cloud solo admite modelos del catálogo Cloud permitido "
+                    "por BlackBelt."
+                ),
+            )
         token = secrets.token_urlsafe(32)
         _store_plan_cloud_state(
             request,
@@ -894,6 +978,15 @@ def create_app(
                 token=payload.token,
                 plan_id=plan_id,
                 cancelled=True,
+            )
+        model = preview.request.get("model")
+        if not isinstance(model, str) or get_cloud_model(model) is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Plan Cloud solo admite modelos del catálogo permitido "
+                    "por BlackBelt."
+                ),
             )
         if not _change_plan_cloud_phase(
             request,
@@ -1919,8 +2012,10 @@ def _meeting_dossier_markdown(
         (
             "---",
             "",
-            "Dossier generado localmente por BlackBelt. "
-            "Verifica las notas fuente antes de compartir o actuar.",
+            (
+                "Dossier generado localmente por BlackBelt. "
+                "Verifica las notas fuente antes de compartir o actuar."
+            ),
             "",
         )
     )
@@ -1973,7 +2068,7 @@ def _save_meeting_dossier(
         )
 
     client_key = _meeting_filename_component(client_id)
-    filename_stem = f"{client_key}_{date.today().isoformat()}"
+    filename_stem = f"{client_key}_{datetime.now().astimezone().date().isoformat()}"
     with _MEETING_SAVE_LOCK:
         for suffix in range(1000):
             numbered_suffix = f"_{suffix:02d}" if suffix else ""
@@ -2390,7 +2485,7 @@ def _create_obsidian_note(
     content: str,
 ) -> str:
     filename_stem = (
-        f"{date.today().isoformat()}_{platform}_"
+        f"{datetime.now().astimezone().date().isoformat()}_{platform}_"
         f"{_obsidian_title_slug(content)}"
     )
     for suffix in range(1000):
@@ -2455,6 +2550,7 @@ def _asset_path(root: Path, application: str) -> Path:
         "ghostwriter": root / "ghostwriter" / "ghostwriter_ai_studio.html",
         "meetings": root / "meetings" / "index.html",
         "plan": root / "plan" / "index.html",
+        "companion": root / "companion" / "index.html",
     }
     try:
         return asset_paths[application]
@@ -2675,6 +2771,16 @@ class _RequestSizeLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
+        request_path = scope.get("path")
+        if request_path == "/api/companion/attachments":
+            max_bytes = _MAX_ATTACHMENT_REQUEST_BYTES
+        elif request_path in {
+            "/api/companion/chat",
+            "/api/companion/cloud-preview",
+        }:
+            max_bytes = _MAX_COMPANION_SOURCE_REQUEST_BYTES
+        else:
+            max_bytes = self.max_bytes
         content_length = _content_length(scope)
         if content_length == -1:
             response = JSONResponse(
@@ -2683,7 +2789,7 @@ class _RequestSizeLimitMiddleware:
             )
             await response(scope, receive, send)
             return
-        if content_length is not None and content_length > self.max_bytes:
+        if content_length is not None and content_length > max_bytes:
             await self._send_too_large(scope, receive, send)
             return
 
@@ -2697,7 +2803,7 @@ class _RequestSizeLimitMiddleware:
             if message["type"] != "http.request":
                 continue
             body_size += len(message.get("body", b""))
-            if body_size > self.max_bytes:
+            if body_size > max_bytes:
                 await self._send_too_large(scope, receive, send)
                 return
             if not message.get("more_body", False):

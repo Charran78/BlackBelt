@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Self
-from urllib.parse import urlparse
 
 import ollama
 import yaml
@@ -23,6 +22,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from blackbelt.core import config as cfg
+from blackbelt.knowledge.companion_cloud import get_cloud_model
 from blackbelt.knowledge.meeting_prep import (
     ALLOWED_FOLDERS,
     CLIENT_FOLDER,
@@ -210,7 +210,6 @@ class PlanService:
         vault: Path,
         drafts_dir: Path | None = None,
         audit_file: Path | None = None,
-        cloud_review_file: Path | None = None,
         model_call: Callable[[str, str, bool], str] | None = None,
     ) -> None:
         self.vault = vault.expanduser()
@@ -222,9 +221,6 @@ class PlanService:
         )
         self._legacy_drafts_dir = cfg.PLAN_DRAFT_DIR.expanduser()
         self.audit_file = (audit_file or cfg.PLAN_AUDIT_FILE).expanduser()
-        self.cloud_review_file = (
-            cloud_review_file or cfg.PLAN_CLOUD_REVIEW_FILE
-        ).expanduser()
         self._model_call = model_call or _ollama_model_call
 
     def available_templates(self) -> dict[str, dict[str, Any]]:
@@ -347,7 +343,6 @@ class PlanService:
             return preview
 
         if engine == "cloud":
-            self._ensure_cloud_review()
             active_console = console or Console()
             self._render_preview_to_console(active_console, sources, full_request)
             if not Confirm.ask(
@@ -523,7 +518,6 @@ class PlanService:
         reference: str | Path,
     ) -> CloudImprovementPreview:
         """Build the exact, minimized Cloud request without sending it."""
-        self._ensure_cloud_review()
         draft_path = self._resolve_draft_path(reference)
         try:
             content = draft_path.read_text(encoding="utf-8")
@@ -838,7 +832,6 @@ class PlanService:
         preview: CloudImprovementPreview,
     ) -> CloudImprovementResult:
         """Send one confirmed request and validate suggestions without writing."""
-        self._ensure_cloud_review()
         if (
             self._model_name("cloud") != preview.request.get("model")
             or cfg.OLLAMA_KEEP_ALIVE != preview.request.get("keep_alive")
@@ -2451,49 +2444,12 @@ class PlanService:
         model = cfg.PLAN_LOCAL_MODEL if engine == "local" else cfg.PLAN_CLOUD_MODEL
         if not model:
             raise PlanServiceError(f"No hay modelo configurado para {engine}.", 2)
-        if engine == "cloud" and not _is_cloud_model(model):
+        if engine == "cloud" and get_cloud_model(model) is None:
             raise PlanServiceError(
-                "PLAN_CLOUD_MODEL debe ser un modelo Ollama Cloud "
-                "con sufijo :cloud o -cloud.",
+                "PLAN_CLOUD_MODEL debe pertenecer al catálogo Cloud permitido.",
                 2,
             )
         return model
-
-    def _ensure_cloud_review(self) -> dict[str, Any]:
-        model = self._model_name("cloud")
-        try:
-            review = yaml.safe_load(
-                self.cloud_review_file.read_text(encoding="utf-8")
-            )
-        except OSError as exc:
-            raise PlanServiceError(
-                "Cloud está bloqueado: falta la revisión inicial documentada "
-                f"en {self.cloud_review_file}.",
-                2,
-            ) from exc
-        except yaml.YAMLError as exc:
-            raise PlanServiceError(
-                "La revisión de proveedor cloud no contiene YAML válido.", 2
-            ) from exc
-        if not isinstance(review, dict):
-            raise PlanServiceError("La revisión cloud debe ser un mapa YAML.", 2)
-        if (
-            review.get("proveedor") != "ollama"
-            or review.get("modelo") != model
-            or review.get("revisado") is not True
-            or not _valid_review_date(review.get("fecha_revision"))
-            or not _https_url(review.get("url_terminos"))
-            or not isinstance(review.get("region"), str)
-            or not isinstance(review.get("retencion"), str)
-            or not isinstance(review.get("entrenamiento"), str)
-        ):
-            raise PlanServiceError(
-                "Cloud está bloqueado: la revisión inicial debe documentar "
-                "proveedor, modelo, fecha, términos, región, retención y uso "
-                "para entrenamiento.",
-                2,
-            )
-        return review
 
     def _render_preview(
         self,
@@ -4049,27 +4005,6 @@ def _safe_filename_component(value: str) -> str:
     if not normalized or normalized in {".", ".."}:
         raise PlanServiceError("Un componente del nombre de archivo no es válido.", 1)
     return normalized[:80]
-
-
-def _is_cloud_model(model: str) -> bool:
-    return model.lower().endswith((":cloud", "-cloud"))
-
-
-def _valid_review_date(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    try:
-        datetime.fromisoformat(value)
-    except ValueError:
-        return False
-    return True
-
-
-def _https_url(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    parsed = urlparse(value)
-    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

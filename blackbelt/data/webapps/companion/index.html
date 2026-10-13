@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101a2a">
+  <meta name="description" content="Compañero local con memoria documental y citas trazables.">
+  <title>BlackBelt Companion</title>
+  <link rel="manifest" href="/companion/manifest.webmanifest">
+  <link rel="icon" href="/companion/icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/companion/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/companion/" aria-label="BlackBelt Companion">
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <span>
+          <strong>BlackBelt</strong>
+          <small>COMPANION</small>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <span class="local-indicator">
+          <span aria-hidden="true"></span>
+          <span id="provider-status">Solo local</span>
+        </span>
+        <button id="install-button" class="button button-quiet hidden" type="button">
+          Instalar app
+        </button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Conversaciones y configuración">
+        <button id="new-chat-button" class="button button-primary button-wide" type="button">
+          <span aria-hidden="true">+</span> Nueva conversación
+        </button>
+
+        <section class="settings-panel" aria-labelledby="model-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">MODELO Y MODO</p>
+              <h2 id="model-heading">Compañero</h2>
+            </div>
+            <span id="model-state" class="state-dot" aria-label="Comprobando Ollama"></span>
+          </div>
+          <label for="mode-select">Cómo responder</label>
+          <select id="mode-select">
+            <option value="deep">Profundo · conversaciones completas</option>
+            <option value="quick">Rápido · pasajes recuperados</option>
+            <option value="general">General · sin memoria</option>
+          </select>
+          <p id="mode-description" class="form-note mode-description">
+            lee conversaciones completas · puede tardar y usar más CPU
+          </p>
+          <label for="model-select">Modelo Ollama</label>
+          <div class="model-picker-row">
+            <select id="model-select" disabled>
+              <option value="">Comprobando modelos locales...</option>
+            </select>
+            <button id="refresh-models-button" class="button button-quiet" type="button">
+              Actualizar
+            </button>
+          </div>
+          <p id="model-note" class="form-note">Las conversaciones y consultas permanecen en este equipo.</p>
+          <label for="profile-select">Perfil de agente</label>
+          <div class="profile-controls">
+            <select id="profile-select">
+              <option value="">Compañero base</option>
+            </select>
+            <button id="edit-profile-button" class="button button-quiet" type="button">
+              Crear perfil
+            </button>
+          </div>
+          <details class="advanced-settings">
+            <summary>Parámetros de generación</summary>
+            <div class="parameter-grid">
+              <label for="temperature-input">Temperatura <output id="temperature-value">0.7</output></label>
+              <input id="temperature-input" type="range" min="0" max="2" step="0.1" value="0.7">
+              <label for="top-p-input">Top P <output id="top-p-value">0.9</output></label>
+              <input id="top-p-input" type="range" min="0.01" max="1" step="0.01" value="0.9">
+              <label for="top-k-input">Top K</label>
+              <input id="top-k-input" type="number" min="1" max="1000" step="1" value="40">
+              <label for="repeat-penalty-input">Penalización de repetición</label>
+              <input id="repeat-penalty-input" type="number" min="0.5" max="2" step="0.05" value="1.1">
+              <label for="context-input">Ventana de contexto</label>
+              <select id="context-input">
+                <option value="512">512 tokens</option>
+                <option value="1024">1.024 tokens</option>
+                <option value="2048">2.048 tokens</option>
+                <option value="4096" selected>4.096 tokens</option>
+                <option value="8192">8.192 tokens</option>
+                <option value="16384">16.384 tokens</option>
+                <option value="32768">32.768 tokens</option>
+                <option value="65536">65.536 tokens</option>
+                <option value="128000">128.000 tokens</option>
+                <option value="256000">256.000 tokens</option>
+                <option value="512000">512.000 tokens</option>
+                <option value="1000000">1.000.000 tokens</option>
+              </select>
+              <label for="predict-input">Máximo de salida</label>
+              <input id="predict-input" type="number" min="64" max="8192" step="64" value="1024">
+            </div>
+            <p class="form-note">El máximo sigue el modelo elegido; aumentar num_ctx no añade historial al payload. En Cloud revisa el contexto y el texto exacto antes de confirmar.</p>
+          </details>
+          <div class="mode-card">
+            <span class="mode-icon" aria-hidden="true">⌕</span>
+            <span>
+              <strong id="mode-card-title">Lectura profunda</strong>
+              <small id="mode-card-note">Memoria local · ventanas verificables</small>
+            </span>
+          </div>
+        </section>
+
+        <section class="history-panel" aria-labelledby="history-heading">
+          <div class="history-heading">
+            <h2 id="history-heading">Conversaciones</h2>
+            <button id="clear-history-button" class="text-button" type="button" disabled>
+              Borrar todo
+            </button>
+          </div>
+          <div id="conversation-list" class="conversation-list" aria-live="polite"></div>
+        </section>
+
+        <div class="privacy-card">
+          <span class="privacy-shield" aria-hidden="true">LOCAL</span>
+          <p>Memoria: <code>024</code> + <code>025</code></p>
+          <small><code>999 - DIARIO</code> excluido. El historial se guarda en este navegador, no en Obsidian.</small>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <div class="chat-topbar">
+          <div>
+            <p class="eyebrow">MEMORIA DOCUMENTAL</p>
+            <h1 id="conversation-title">Una conversación con continuidad</h1>
+          </div>
+          <button id="export-button" class="button button-quiet" type="button" disabled>
+            Exportar Markdown
+          </button>
+        </div>
+
+        <section id="message-list" class="message-list" role="log" aria-live="polite" aria-relevant="additions text">
+          <div id="welcome-state" class="welcome-state">
+            <div class="welcome-mark" aria-hidden="true">C</div>
+            <p class="eyebrow">COMPAÑERO LOCAL</p>
+            <h2>Tu memoria, con fuentes a la vista.</h2>
+            <p>Pregunta por ideas, proyectos o decisiones. El Companion buscará en las carpetas autorizadas y mostrará de dónde sale cada recuerdo.</p>
+            <div class="welcome-suggestions" aria-label="Preguntas sugeridas">
+              <button class="suggestion" type="button">¿Qué proyectos he imaginado?</button>
+              <button class="suggestion" type="button">¿Qué decisiones recuerdo sobre BlackBelt?</button>
+              <button class="suggestion" type="button">¿Qué debería retomar ahora?</button>
+            </div>
+          </div>
+        </section>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="chat-input">Escribe tu pregunta</label>
+          <textarea id="chat-input" rows="1" maxlength="5000" placeholder="Pregunta a tu Companion..." disabled></textarea>
+          <div id="attachment-tray" class="attachment-tray hidden">
+            <div class="attachment-tray-heading">
+              <span id="attachment-summary"></span>
+              <small>Archivos temporales locales · no se guardan en el historial</small>
+            </div>
+            <div id="attachment-list" class="attachment-list"></div>
+          </div>
+          <div id="web-source-tray" class="web-source-tray hidden">
+            <span id="web-source-name"></span>
+            <div>
+              <button id="review-web-source" class="text-button" type="button">Revisar</button>
+              <button id="remove-web-source" class="text-button" type="button">Quitar</button>
+            </div>
+          </div>
+          <div class="composer-footer">
+            <span id="interaction-status" role="status" aria-live="polite">Conectando con Ollama local...</span>
+            <div class="composer-actions">
+              <span class="composer-hint">Enter para enviar · Shift+Enter para nueva línea</span>
+              <label class="button button-quiet attachment-picker" for="attachment-input">
+                Adjuntar
+                <input
+                  id="attachment-input"
+                  class="sr-only"
+                  type="file"
+                  accept=".pdf,.docx,.txt,.md,.csv,.json,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.webp"
+                  multiple
+                  disabled
+                >
+              </label>
+              <button id="read-jina-button" class="button button-quiet" type="button" disabled>
+                Leer URL con Jina
+              </button>
+              <button id="search-jina-button" class="button button-quiet" type="button" disabled>
+                Buscar web con Jina
+              </button>
+              <button id="send-button" class="button button-primary send-button" type="submit" disabled>
+                Enviar <span aria-hidden="true">↑</span>
+              </button>
+              <button id="stop-button" class="button button-stop hidden" type="button">
+                Detener
+              </button>
+            </div>
+          </div>
+        </form>
+      </main>
+    </div>
+    <dialog id="jina-dialog" class="profile-dialog jina-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">LECTURA EXPLÍCITA CON JINA</p>
+            <h2>Revisar una página web</h2>
+          </div>
+        </div>
+        <p class="cloud-warning">
+          Al pulsar «Enviar URL a Jina», el servicio externo recibirá esta dirección
+          y obtendrá su contenido. Ni tu pregunta ni tu historial se envían a Jina.
+          El texto extraído no se usará en el chat hasta que lo revises y lo añadas.
+        </p>
+        <label for="jina-url-input">URL pública HTTP(S)</label>
+        <input id="jina-url-input" type="url" maxlength="2048" required
+          placeholder="https://ejemplo.com/articulo">
+        <div id="jina-read-status" class="jina-read-status hidden" role="status"
+          aria-live="polite" aria-atomic="true">
+          <p id="jina-read-status-message"></p>
+        </div>
+        <div id="jina-content-review" class="jina-content-review hidden">
+          <div class="jina-source-heading">
+            <strong id="jina-page-title"></strong>
+            <a id="jina-page-url" target="_blank" rel="noopener noreferrer"></a>
+          </div>
+          <label for="jina-content-preview">Texto extraído (editable antes de añadirlo)</label>
+          <p id="jina-source-notice" class="form-note"></p>
+          <textarea id="jina-content-preview" class="jina-content-preview"
+            maxlength="24000" required></textarea>
+          <p id="jina-content-count" class="form-note" aria-live="polite"></p>
+        </div>
+        <div class="dialog-actions">
+          <button id="cancel-jina-reading" class="button button-quiet" type="button">
+            Cancelar
+          </button>
+          <span class="dialog-spacer"></span>
+          <button id="read-jina-url" class="button button-primary" type="button">
+            Enviar URL a Jina y previsualizar
+          </button>
+          <button id="retry-jina-read" class="button button-quiet" type="button">
+            Leer una vez con hasta 15.000 tokens
+          </button>
+          <button id="discard-jina-source" class="button button-quiet hidden" type="button">
+            Descartar lectura
+          </button>
+          <button id="use-jina-source" class="button button-primary hidden" type="button">
+            Usar como contexto
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="jina-search-dialog" class="profile-dialog jina-search-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">BÚSQUEDA WEB EXPLÍCITA</p>
+            <h2>Buscar en la web</h2>
+          </div>
+        </div>
+        <p class="cloud-warning">
+          Al buscar, Jina Search recibirá exactamente esta consulta y podrá asociarla
+          con tu dirección IP o API key. No se envían la pregunta del chat ni el
+          historial. Los resultados son solo una vista previa; la URL elegida se
+          enviará después a Jina Reader para que revises el texto antes de usarlo.
+          Esta función requiere configurar JINA_API_KEY en el servidor local.
+        </p>
+        <label for="jina-search-query">Consulta que se enviará a Jina Search</label>
+        <input id="jina-search-query" type="search" maxlength="300" required
+          autocomplete="off" placeholder="Ej.: alternativas locales a Ollama">
+        <div id="jina-search-results" class="jina-search-results hidden"></div>
+        <div class="dialog-actions">
+          <button id="close-jina-search" class="button button-quiet" type="button">
+            Cerrar
+          </button>
+          <span class="dialog-spacer"></span>
+          <button id="submit-jina-search" class="button button-primary" type="button">
+            Enviar consulta a Jina
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="cloud-preview-dialog" class="profile-dialog cloud-preview-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">CONSENTIMIENTO POR GENERACIÓN</p>
+            <h2>Revisa antes de enviar a Cloud</h2>
+          </div>
+        </div>
+        <p class="cloud-warning">
+          El JSON siguiente es el payload exacto para Ollama Cloud. Revisa pregunta,
+          historial y, en modo Rápido, los pasajes. No incluye archivos adjuntos.
+          Cancelar aquí no envía nada.
+        </p>
+        <p class="cloud-payload-hash">
+          SHA-256 del payload: <code id="cloud-payload-hash"></code>
+        </p>
+        <pre id="cloud-payload-preview" class="cloud-payload-preview"></pre>
+        <div id="cloud-reference-preview" class="cloud-reference-preview"></div>
+        <div class="dialog-actions">
+          <span class="dialog-spacer"></span>
+          <button id="cancel-cloud-send" class="button button-quiet" type="button">
+            Cancelar
+          </button>
+          <button id="confirm-cloud-send" class="button button-primary" type="button">
+            Enviar exactamente este payload
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="profile-dialog" class="profile-dialog">
+      <form id="profile-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">PERFIL LOCAL</p>
+            <h2 id="profile-dialog-title">Crear agente</h2>
+          </div>
+          <button id="close-profile-button" class="text-button" type="button" aria-label="Cerrar">Cerrar</button>
+        </div>
+        <label for="profile-name-input">Nombre</label>
+        <input id="profile-name-input" maxlength="80" required>
+        <label for="profile-role-input">Rol</label>
+        <input id="profile-role-input" maxlength="500" required placeholder="Ej. asesor de proyectos">
+        <label for="profile-purpose-input">Propósito</label>
+        <textarea id="profile-purpose-input" maxlength="1000" rows="2" required></textarea>
+        <label for="profile-rules-input">Reglas, una por línea</label>
+        <textarea id="profile-rules-input" maxlength="10019" rows="5" required></textarea>
+        <p id="profile-rules-count" class="form-note" aria-live="polite">
+          0 / 20 reglas · máximo 500 caracteres por regla.
+        </p>
+        <p class="form-note">Los perfiles locales admiten hasta 16.384 tokens de contexto.</p>
+        <p class="form-note">Se guarda en `~/.blackbelt/companion/agents`. El Modelfile se exporta para revisión; no se ejecuta.</p>
+        <div class="dialog-actions">
+          <button id="delete-profile-button" class="button button-stop hidden" type="button">Borrar perfil</button>
+          <button id="export-profile-button" class="button button-quiet hidden" type="button">Exportar Modelfile</button>
+          <span class="dialog-spacer"></span>
+          <button id="cancel-profile-button" class="button button-quiet" type="button">Cancelar</button>
+          <button class="button button-primary" type="submit">Guardar perfil</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+  <script src="/companion/app.js" defer></script>
+</body>
+</html>

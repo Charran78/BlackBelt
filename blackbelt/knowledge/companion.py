@@ -6,12 +6,8 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import urlsplit
-
-import yaml
 
 from blackbelt.core import config as cfg
 from blackbelt.knowledge.semantic_search import (
@@ -291,49 +287,6 @@ def initialize_contract(contract_file: Path) -> bool:
     return True
 
 
-def validate_cloud_review(review_file: Path, model: str) -> dict[str, Any]:
-    """Fail closed unless the configured Ollama Cloud model was reviewed."""
-    if not _is_cloud_model(model):
-        raise ValueError("El modelo de comparación debe tener sufijo :cloud o -cloud.")
-    try:
-        review = yaml.safe_load(review_file.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise ValueError(
-            f"Cloud está bloqueado: falta la revisión del proveedor en {review_file}."
-        ) from exc
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise ValueError(
-            "No se pudo leer una revisión Cloud válida en "
-            f"{review_file} ({type(exc).__name__})."
-        ) from exc
-    if not isinstance(review, dict):
-        raise TypeError("La revisión Cloud debe ser un mapa YAML.")
-
-    reviewed_date = review.get("fecha_revision")
-    terms_url = review.get("url_terminos")
-    valid_url = isinstance(terms_url, str) and _is_https_url(terms_url)
-    try:
-        date.fromisoformat(str(reviewed_date))
-        valid_date = True
-    except ValueError:
-        valid_date = False
-    if (
-        review.get("proveedor") != "ollama"
-        or review.get("modelo") != model
-        or review.get("revisado") is not True
-        or not valid_date
-        or not valid_url
-        or not _nonempty_text(review.get("region"))
-        or not _nonempty_text(review.get("retencion"))
-        or not _nonempty_text(review.get("entrenamiento"))
-    ):
-        raise ValueError(
-            "La revisión Cloud debe coincidir con el modelo e incluir fecha, "
-            "términos HTTPS, región, retención y uso para entrenamiento."
-        )
-    return review
-
-
 def _memory_reference(alias: str, hit: SearchHit, vault: Path) -> MemoryReference:
     provenance = hit.provenance
     section = provenance.section_path if provenance is not None else ""
@@ -479,19 +432,3 @@ def _conversation_date(vault: Path, relative_path: str) -> str | None:
         return None
     match = _CONVERSATION_DATE_PATTERN.search(header)
     return match.group(1).strip() if match else None
-
-
-def _is_cloud_model(model: str) -> bool:
-    return model.casefold().endswith((":cloud", "-cloud"))
-
-
-def _is_https_url(value: str) -> bool:
-    try:
-        parsed = urlsplit(value)
-    except ValueError:
-        return False
-    return parsed.scheme == "https" and bool(parsed.netloc)
-
-
-def _nonempty_text(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())

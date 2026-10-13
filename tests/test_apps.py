@@ -57,6 +57,29 @@ def test_launcher_binds_loopback_and_uses_configured_port(
     assert observed["ran"] is True
 
 
+def test_launcher_applies_jina_key_from_personal_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".env.personalizaciones").write_text(
+        "JINA_API_KEY=local-search-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    monkeypatch.setattr(apps.cfg, "JINA_API_KEY", "stale-import-value")
+
+    def fake_load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        if args and Path(args[0]).name == ".env.personalizaciones":
+            monkeypatch.setenv("JINA_API_KEY", "local-search-key")
+        return True
+
+    monkeypatch.setattr(apps, "load_dotenv", fake_load_dotenv)
+    apps._load_configuration()
+
+    assert apps.cfg.JINA_API_KEY == "local-search-key"
+
+
 @pytest.mark.parametrize("port", ["0", "1023", "65536", "not-a-port"])
 def test_launcher_rejects_invalid_port(
     monkeypatch: pytest.MonkeyPatch,
@@ -131,6 +154,31 @@ def test_launcher_opens_plan_pwa(
 
     assert observed["config"].app == {"default_page": "plan"}
     assert observed["config"].port == 9125
+    assert observed["ran"] is True
+
+
+def test_launcher_opens_companion_pwa(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+
+    class FakeServer:
+        def __init__(self, config: Any) -> None:
+            observed["config"] = config
+
+        def run(self) -> None:
+            observed["ran"] = True
+
+    monkeypatch.setattr(apps, "_load_configuration", lambda: None)
+    monkeypatch.setattr(apps, "create_app", lambda **kwargs: kwargs)
+    monkeypatch.setattr(apps, "_BrowserOpeningServer", FakeServer)
+    monkeypatch.setattr(apps, "_blackbelt_server_is_ready", lambda port: False)
+    monkeypatch.setenv("BLACKBELT_WEBAPPS_PORT", "9127")
+
+    apps.run(["companion"])
+
+    assert observed["config"].app == {"default_page": "companion"}
+    assert observed["config"].port == 9127
     assert observed["ran"] is True
 
 
