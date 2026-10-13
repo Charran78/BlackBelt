@@ -429,6 +429,8 @@ El Gatekeeper es la capa de seguridad de BlackBelt. Intercepta acciones sensible
 - [x] Linux Mentor (info, explain, diagnose)
 - [x] Predictor de comandos con recetas locales y Gatekeeper
 - [x] Clasificador de Gmail en modo IMAP de solo lectura
+- [x] Launcher PWA con terminal integrada y arranque de escritorio en segundo plano
+- [x] Índices separados de trabajo y Companion, con búsqueda federada bajo demanda
 
 ### Próximo
 - [ ] Flag global `--yes` para automatización
@@ -443,6 +445,9 @@ El Gatekeeper es la capa de seguridad de BlackBelt. Intercepta acciones sensible
 - [ ] Snapshot previo a escrituras masivas en Obsidian
 - [ ] TUI completa con paneles
 - [ ] Documentación de aprendizaje Linux/Python asistida por IA
+- [ ] Contexto temporal en Companion: mostrar fechas, señalar posibles contradicciones y mantener la vigencia como una inferencia prudente, no automática
+- [ ] Flujo de aprobación humana para futuras acciones con efectos secundarios, como crear borradores o modificar tareas
+- [ ] Reporte diario local de tareas, reuniones y correo; valorar Telegram solo como destino opcional posterior
 
 ---
 
