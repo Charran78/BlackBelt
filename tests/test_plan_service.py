@@ -1406,6 +1406,169 @@ def test_cloud_success_previews_request_and_audits_only_hashes(
     assert "Implementar la web de reservas." not in json.dumps(event)
 
 
+def test_remote_plan_preview_uses_discovered_model_and_provider_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    class FakeProvider:
+        def preview_payload(self, request: Any) -> dict[str, Any]:
+            return {
+                "model": request.selection.model,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ],
+                "response_format": {"type": "json_object"},
+                "stream": False,
+            }
+
+    monkeypatch.setattr(
+        plan_service,
+        "discover_models",
+        lambda provider: [
+            ModelInfo(provider=provider, model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr(
+        plan_service,
+        "get_provider",
+        lambda *_args, **_kwargs: FakeProvider(),
+    )
+    service = _service(tmp_path)
+
+    preview = service.prepare(
+        client="CL001",
+        project="PROY001",
+        proposals=("PR001",),
+        provider="groq",
+        model="openai/gpt-oss-120b",
+        dry_run=True,
+        return_preview_data=True,
+    )
+
+    assert isinstance(preview, plan_service.PlanGenerationPreview)
+    assert preview.request_sha256 and len(preview.request_sha256) == 64
+    assert "Proveedor: groq" in preview.text
+    assert "openai/gpt-oss-120b" in preview.text
+    assert '"response_format": {' in preview.text
+
+
+def test_remote_plan_rejects_model_without_json_capability(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    monkeypatch.setattr(
+        plan_service,
+        "discover_models",
+        lambda provider: [
+            ModelInfo(
+                provider=provider,
+                model="model-without-json",
+                supports_json=False,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        plan_service,
+        "get_provider",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Provider adapter should not be built for an incompatible model."
+        ),
+    )
+    service = _service(tmp_path)
+
+    with pytest.raises(PlanServiceError, match="no declara soporte JSON"):
+        service.prepare(
+            client="CL001",
+            project="PROY001",
+            provider="openrouter",
+            model="model-without-json",
+            dry_run=True,
+        )
+
+
+def test_remote_plan_requires_matching_preview_hash_before_provider_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    calls: list[str] = []
+
+    class FakeProvider:
+        def preview_payload(self, request: Any) -> dict[str, Any]:
+            return {
+                "model": request.selection.model,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ],
+            }
+
+        def complete(self, _request: Any) -> str:
+            calls.append("complete")
+            return _model_response()
+
+    monkeypatch.setattr(
+        plan_service,
+        "discover_models",
+        lambda provider: [
+            ModelInfo(provider=provider, model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr(
+        plan_service,
+        "get_provider",
+        lambda *_args, **_kwargs: FakeProvider(),
+    )
+    service = _service(tmp_path)
+    preview = service.prepare(
+        client="CL001",
+        project="PROY001",
+        proposals=("PR001",),
+        provider="groq",
+        model="openai/gpt-oss-120b",
+        dry_run=True,
+        return_preview_data=True,
+    )
+    assert isinstance(preview, plan_service.PlanGenerationPreview)
+    with pytest.raises(PlanServiceError, match="confirmación explícitas"):
+        service.prepare(
+            client="CL001",
+            project="PROY001",
+            proposals=("PR001",),
+            provider="groq",
+            model="openai/gpt-oss-120b",
+        )
+    assert calls == []
+
+    source = (
+        service.vault
+        / "013 - PROPUESTA _PRESUPUESTO"
+        / "PR001 - Web.md"
+    )
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nCambio posterior.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PlanServiceError, match="cambiaron desde la previsualización"):
+        service.prepare(
+            client="CL001",
+            project="PROY001",
+            proposals=("PR001",),
+            provider="groq",
+            model="openai/gpt-oss-120b",
+            confirm_remote=True,
+            expected_request_hash=preview.request_sha256,
+        )
+    assert calls == []
+
+
 def test_ollama_model_call_reads_typed_chat_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

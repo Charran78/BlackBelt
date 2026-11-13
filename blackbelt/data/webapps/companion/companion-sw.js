@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "companion-shell-v12";
+const CACHE_NAME = "companion-shell-v13";
 const APP_SHELL = [
   "/companion/",
   "/companion/manifest.webmanifest",

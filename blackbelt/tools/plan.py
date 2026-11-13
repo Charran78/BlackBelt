@@ -86,6 +86,15 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("local", "cloud"),
         default="local",
     )
+    prepare_parser.add_argument(
+        "--provider",
+        choices=("ollama", "groq", "openrouter"),
+        help="Proveedor elegido explícitamente; remoto requiere revisión.",
+    )
+    prepare_parser.add_argument(
+        "--model",
+        help="ID exacto del modelo disponible en el proveedor seleccionado.",
+    )
     prepare_parser.add_argument("--template", action="append", default=[])
     prepare_parser.add_argument("--dry-run", action="store_true")
     prepare_parser.add_argument("--audit-reads", action="store_true")
@@ -157,6 +166,8 @@ def _prepare(service: PlanService, parsed: argparse.Namespace) -> None:
         dossiers=parsed.dossier or None,
         questions_only=parsed.questions_only,
         engine=parsed.engine,
+        provider=parsed.provider,
+        model=parsed.model,
         template_id=parsed.template[0] if parsed.template else None,
         dry_run=parsed.dry_run,
         console=console,

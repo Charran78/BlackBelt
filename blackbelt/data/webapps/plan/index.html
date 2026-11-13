@@ -117,6 +117,20 @@
               <select id="dossier-ids" name="dossier_ids" multiple size="3" disabled>
                 <option value="">Selecciona primero un cliente</option>
               </select>
+              <label for="provider-select">Proveedor</label>
+              <select id="provider-select" name="provider">
+                <option value="ollama">Ollama local / Cloud</option>
+                <option value="groq">Groq</option>
+                <option value="openrouter">OpenRouter</option>
+              </select>
+              <label for="model-select">Modelo descubierto</label>
+              <select id="model-select" name="model">
+                <option value="">Cargando modelos...</option>
+              </select>
+              <p id="provider-note" class="form-footnote">
+                Los envíos remotos muestran el payload exacto y requieren confirmación.
+                Las claves se guardan con <code>blackbelt run providers configure</code>.
+              </p>
               <p class="form-footnote">
                 Al seleccionar un proyecto, sus fuentes vinculadas quedan
                 preseleccionadas para el plan. Puedes ajustar cada selección
@@ -179,6 +193,25 @@
         </section>
       </section>
     </main>
+      <dialog id="provider-preview-dialog" class="review-dialog">
+        <form method="dialog">
+          <h2>Revisar solicitud remota</h2>
+          <p id="provider-preview-destination" class="form-footnote"></p>
+          <p class="form-footnote">
+            Revisa fuentes, datos y payload. Cancelar no envía nada.
+          </p>
+          <pre id="provider-preview-payload" class="panorama-diff"></pre>
+          <p class="form-footnote">SHA-256: <code id="provider-preview-hash"></code></p>
+          <div class="dialog-actions">
+            <button id="cancel-provider-preview" class="button button-quiet" type="button">
+              Cancelar
+            </button>
+            <button id="confirm-provider-preview" class="button button-primary" type="button">
+              Confirmar envío
+            </button>
+          </div>
+        </form>
+      </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </div>

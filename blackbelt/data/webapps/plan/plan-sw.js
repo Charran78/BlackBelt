@@ -1,4 +1,4 @@
-const CACHE_NAME = "plan-shell-v8";
+const CACHE_NAME = "plan-shell-v9";
 const APP_SHELL = [
   "/plan/",
   "/plan/manifest.webmanifest",

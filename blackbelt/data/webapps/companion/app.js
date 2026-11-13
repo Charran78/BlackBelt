@@ -20,6 +20,7 @@ const state = {
   jinaExpandedBudgetUsed: false,
   jinaSearchResults: [],
   uploadingAttachments: false,
+  provider: "ollama",
   model: "",
   cloudModel: "",
   cloudModels: [],
@@ -40,6 +41,7 @@ const elements = {
   modeDescription: document.querySelector("#mode-description"),
   modeCardTitle: document.querySelector("#mode-card-title"),
   modeCardNote: document.querySelector("#mode-card-note"),
+  provider: document.querySelector("#provider-select"),
   model: document.querySelector("#model-select"),
   refreshModels: document.querySelector("#refresh-models-button"),
   modelState: document.querySelector("#model-state"),
@@ -48,6 +50,7 @@ const elements = {
   cloudDialog: document.querySelector("#cloud-preview-dialog"),
   cloudPayload: document.querySelector("#cloud-payload-preview"),
   cloudPayloadHash: document.querySelector("#cloud-payload-hash"),
+  cloudProvider: document.querySelector("#cloud-provider-preview"),
   cloudReferences: document.querySelector("#cloud-reference-preview"),
   confirmCloud: document.querySelector("#confirm-cloud-send"),
   cancelCloud: document.querySelector("#cancel-cloud-send"),
@@ -229,7 +232,7 @@ const MODES = {
 function updateModeSummary() {
   const mode = MODES[state.mode] ? state.mode : "deep";
   const details = { ...MODES[mode] };
-  if (isCloudModel() && mode === "deep") {
+if (isCloudModel() && state.mode === "deep") {
     details.description = "Profundo solo funciona en local · cambia a General o Rápido";
     details.cardNote = "Cloud no recibe la lectura profunda";
   }
@@ -248,6 +251,7 @@ function selectedCloudModel(model = state.model) {
 }
 
 function cloudReadinessMessage(cloudModel) {
+  if (cloudModel.provider && cloudModel.provider !== "ollama") return "";
   return cloudModel.availability_reason
     || `Modelo no preparado; ejecuta \`${cloudModel.prepare_command}\` `
       + "en una terminal y pulsa Actualizar.";
@@ -257,7 +261,7 @@ function updateProviderStatus() {
   const cloud = isCloudModel();
   const cloudModel = cloud ? selectedCloudModel() : null;
   elements.providerStatus.textContent = cloud
-    ? `Ollama Cloud · ${cloudModel.label} · confirmación obligatoria`
+    ? `${state.provider} · ${cloudModel.label} · confirmación obligatoria`
       + `${state.jinaSource ? " · incluye fuente Jina" : ""}`
     : "Solo local";
   updateModeSummary();
@@ -271,7 +275,7 @@ function updateProviderStatus() {
     setStatus(cloudReadinessMessage(cloudModel), true);
   } else {
     setStatus(cloud
-      ? "Uso sujeto a los límites de tu cuenta Ollama · revisa el payload antes de cada envío."
+      ? `Uso sujeto a los límites de ${state.provider} · revisa el destino y payload antes de cada envío.`
       : "Proveedor local seleccionado.");
   }
 }
@@ -978,6 +982,14 @@ async function selectConversation(id) {
   if (!conversation) return;
   await clearAttachments();
   clearTransientJinaSource();
+  const conversationProvider = ["ollama", "groq", "openrouter"].includes(
+    conversation.provider,
+  )
+    ? conversation.provider
+    : "ollama";
+  if (conversationProvider !== state.provider) {
+    await loadModels(conversationProvider);
+  }
   state.activeConversation = conversation;
   if ([...elements.model.options].some((option) => option.value === conversation.model)) {
     state.model = conversation.model;
@@ -1030,64 +1042,109 @@ async function clearHistory() {
   showToast("Historial local borrado.");
 }
 
-async function loadModels() {
+async function loadModels(provider = state.provider) {
+  state.provider = provider;
+  elements.provider.value = provider;
   try {
     const previousModel = state.model;
-    const response = await fetch("/api/companion/models", {
+    const endpoint = provider === "ollama"
+      ? "/api/companion/models"
+      : `/api/providers/${encodeURIComponent(provider)}/models`;
+    const response = await fetch(endpoint, {
       cache: "no-store",
       signal: AbortSignal.timeout(MODEL_LIST_TIMEOUT_MS),
     });
     const result = await readJsonResponse(response);
     elements.model.replaceChildren();
-    state.cloudModels = result.cloud_models || [];
-    state.cloudModel = state.cloudModels.some(
-      (item) => item.model === result.cloud_model,
-    )
-      ? result.cloud_model
-      : state.cloudModels[0]?.model || "";
-    for (const model of result.models) {
-      elements.model.append(new Option(model, model));
+    if (provider === "ollama") {
+      state.cloudModels = result.cloud_models || [];
+      state.cloudModel = state.cloudModels.some(
+        (item) => item.model === result.cloud_model,
+      )
+        ? result.cloud_model
+        : state.cloudModels[0]?.model || "";
+      for (const model of result.models) {
+        elements.model.append(new Option(model, model));
+      }
+      if (!result.models.length) {
+        const unavailable = new Option("Modelos locales no registrados", "");
+        unavailable.disabled = true;
+        elements.model.append(unavailable);
+      }
+      for (const cloudModel of state.cloudModels) {
+        const suffix = cloudModel.available
+          ? ` · contexto ${cloudModel.context_description}`
+          : " · preparación requerida";
+        const cloudOption = new Option(
+          `Ollama Cloud · ${cloudModel.label}${suffix}`,
+          cloudModel.model,
+        );
+        cloudOption.title = cloudModel.block_reason
+          || `Contexto máximo publicado: ${cloudModel.context_description}`;
+        elements.model.append(cloudOption);
+      }
+      const previousModelStillExists = result.models.includes(previousModel)
+        || state.cloudModels.some((item) => item.model === previousModel);
+      state.model = previousModelStillExists
+        ? previousModel
+        : result.default_model || result.models[0] || state.cloudModel;
+    } else {
+      state.cloudModels = (result.models || []).map((item) => {
+        const contextTokens = item.context_tokens;
+        const contextDescription = Number.isInteger(contextTokens)
+          ? contextTokens.toLocaleString("es-ES")
+          : "no publicado";
+        const pricing = item.metadata?.pricing;
+        const pricingNote = pricing
+          ? `Metadatos de precio: ${JSON.stringify(pricing)}`
+          : "Precio no publicado por el catálogo.";
+        const option = new Option(
+          `${provider} · ${item.id}`,
+          item.id,
+        );
+        option.title = `${pricingNote} Contexto: ${contextDescription}.`;
+        elements.model.append(option);
+        return {
+          model: item.id,
+          label: item.id,
+          available: true,
+          context_tokens: contextTokens,
+          context_description: contextDescription,
+          block_reason: "",
+          provider,
+        };
+      });
+      state.cloudModel = state.cloudModels[0]?.model || "";
+      state.model = state.cloudModels.some(
+        (item) => item.model === previousModel,
+      )
+        ? previousModel
+        : state.cloudModel;
     }
-    if (!result.models.length) {
-      const unavailable = new Option("Modelos locales no registrados", "");
-      unavailable.disabled = true;
-      elements.model.append(unavailable);
-    }
-    for (const cloudModel of state.cloudModels) {
-      const suffix = cloudModel.available
-        ? ` · contexto ${cloudModel.context_description}`
-        : " · preparación requerida";
-      const cloudOption = new Option(
-        `Ollama Cloud · ${cloudModel.label}${suffix}`,
-        cloudModel.model,
-      );
-      cloudOption.title = cloudModel.block_reason
-        || `Contexto máximo publicado: ${cloudModel.context_description}`;
-      elements.model.append(cloudOption);
-    }
-    const previousModelStillExists = result.models.includes(previousModel)
-      || state.cloudModels.some((item) => item.model === previousModel);
-    state.model = previousModelStillExists
-      ? previousModel
-      : result.default_model || result.models[0] || state.cloudModel;
     elements.model.value = state.model;
     elements.model.disabled = !state.model;
+    localStorage.setItem("blackbelt-companion-provider", provider);
     elements.modelState.classList.remove("offline");
     elements.modelState.setAttribute(
       "aria-label",
-      result.models.length
-        ? "Ollama local disponible"
-        : "Selecciona un modelo Cloud",
+      provider === "ollama"
+        ? (result.models.length
+          ? "Ollama local disponible"
+          : "Selecciona un modelo Cloud")
+        : `${provider} disponible`,
     );
     updateProviderStatus();
   } catch (error) {
-    elements.model.replaceChildren(new Option("Ollama no disponible", ""));
+    state.cloudModels = [];
+    state.cloudModel = "";
+    state.model = "";
+    elements.model.replaceChildren(new Option(`${provider} no disponible`, ""));
     elements.model.disabled = true;
     elements.modelState.classList.add("offline");
-    elements.modelState.setAttribute("aria-label", "Ollama local no disponible");
+    elements.modelState.setAttribute("aria-label", `${provider} no disponible`);
     elements.modelNote.textContent = error.message;
     setStatus(error.message, true);
-    updateComposerState();
+    updateProviderStatus();
   }
 }
 
@@ -1331,12 +1388,13 @@ function updateComposerState() {
   elements.reviewWebSource.disabled = state.busy || !state.jinaSource;
   elements.removeWebSource.disabled = state.busy || !state.jinaSource;
   elements.model.disabled = !available || state.busy;
+  elements.provider.disabled = state.busy;
   elements.refreshModels.disabled = state.busy;
   elements.modelNote.textContent = cloud
     ? cloudReadinessMessage(cloudModel) || (
-      `Ollama Cloud · contexto hasta ${cloudModel.context_description}. `
+      `${state.provider} · contexto ${cloudModel.context_description}. `
       + "El payload exacto exige confirmación."
-      + " El uso depende de los límites de tu cuenta Ollama."
+      + ` El uso depende de los límites de tu cuenta ${state.provider}.`
     )
     : state.model
       ? "Modelo local · conversación y consulta permanecen en este equipo."
@@ -1353,6 +1411,8 @@ function updateComposerState() {
 }
 
 function showCloudPreview(preview) {
+  elements.cloudProvider.textContent =
+    `Destino confirmado: ${preview.provider} · ${preview.model}`;
   elements.cloudPayload.textContent = JSON.stringify(preview.payload, null, 2);
   elements.cloudPayloadHash.textContent = preview.payload_sha256;
   elements.cloudReferences.replaceChildren();
@@ -1393,6 +1453,7 @@ function createConversation() {
   return {
     id: crypto.randomUUID(),
     title: "Conversación nueva",
+    provider: state.provider,
     model: state.model,
     mode: state.mode,
     profileId: state.profileId,
@@ -1431,7 +1492,7 @@ async function sendQuestion(question) {
     const cloud = isCloudModel();
     if (cloud && (mode === "deep" || profileId || attachments.length)) {
       throw new Error(
-        "Ollama Cloud solo admite los modos General o Rápido, sin perfiles ni adjuntos.",
+        `${state.provider} solo admite los modos General o Rápido, sin perfiles ni adjuntos.`,
       );
     }
     if (mode === "deep") {
@@ -1470,6 +1531,7 @@ async function sendQuestion(question) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query,
+          provider: state.provider,
           model: state.model,
           mode,
           history,
@@ -1494,6 +1556,7 @@ async function sendQuestion(question) {
       role: "user",
       content: query,
       mode,
+      provider: state.provider,
       model: state.model,
       attachments: attachments.map(({ id: _id, ...metadata }) => metadata),
       webSources: jinaSource ? [webSourceMetadata(jinaSource)] : [],
@@ -1503,6 +1566,7 @@ async function sendQuestion(question) {
       conversation.title = query.length > 64 ? `${query.slice(0, 61)}...` : query;
     }
     conversation.model = state.model;
+    conversation.provider = state.provider;
     conversation.mode = mode;
     conversation.profileId = profileId;
     conversation.options = options;
@@ -1518,7 +1582,9 @@ async function sendQuestion(question) {
       content: "",
       mode,
       model: state.model,
-      provider: cloud ? "Ollama Cloud" : "local",
+      provider: cloud
+        ? `${state.provider}${state.provider === "ollama" ? " Cloud" : ""}`
+        : "local",
       references: [],
       webSources: [],
       createdAt: Date.now(),
@@ -1807,6 +1873,19 @@ elements.mode.addEventListener("change", () => {
   updateProviderStatus();
   saveConversationSettings();
 });
+elements.provider.addEventListener("change", () => {
+  const provider = elements.provider.value;
+  state.model = "";
+  state.cloudModels = [];
+  state.cloudModel = "";
+  loadModels(provider).then(() => {
+    if (state.activeConversation) {
+      state.activeConversation.provider = provider;
+      state.activeConversation.model = state.model;
+      saveConversationSettings();
+    }
+  }).catch((error) => showToast(error.message, true));
+});
 elements.confirmCloud.addEventListener("click", () => finishCloudConsent(true));
 elements.cancelCloud.addEventListener("click", () => finishCloudConsent(false));
 elements.cloudDialog.addEventListener("cancel", (event) => {
@@ -1853,6 +1932,7 @@ elements.model.addEventListener("change", () => {
     renderProfiles();
   }
   if (state.activeConversation) {
+    state.activeConversation.provider = state.provider;
     state.activeConversation.model = state.model;
   }
   updateProviderStatus();
@@ -1902,6 +1982,10 @@ window.addEventListener("beforeinstallprompt", handleInstallPrompt);
 
 async function initialize() {
   registerServiceWorker();
+  const storedProvider = localStorage.getItem("blackbelt-companion-provider");
+  if (["ollama", "groq", "openrouter"].includes(storedProvider)) {
+    state.provider = storedProvider;
+  }
   const modelsLoading = loadModels();
   try {
     state.database = await openDatabase();

@@ -17,6 +17,7 @@ from blackbelt.knowledge import plan_service
 from blackbelt.knowledge.plan import parse_plan_markdown, render_plan_markdown
 from blackbelt.knowledge.plan_service import PlanService, PlanServiceError
 from blackbelt.knowledge.provenance import parse_markdown_source
+from blackbelt.providers.chat import ChatRequest, ModelInfo, ProviderName
 
 _PROPOSAL_TEXT = (
     "# Plan de trabajo\n\n"
@@ -129,6 +130,51 @@ def _cloud_response() -> str:
             ],
         }
     )
+
+
+class _FakeChatProvider:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.requests: list[ChatRequest] = []
+
+    def preview_payload(self, request: ChatRequest) -> dict[str, Any]:
+        return {
+            "model": request.selection.model,
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in request.messages
+            ],
+            "response_format": {"type": request.response_format},
+            "stream": request.stream,
+        }
+
+    def complete(self, request: ChatRequest) -> str:
+        self.requests.append(request)
+        return self.response
+
+
+def _install_fake_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ProviderName,
+    model: str,
+) -> tuple[list[ModelInfo], _FakeChatProvider]:
+    catalog = [ModelInfo(provider=provider, model=model, supports_json=True)]
+    adapter = _FakeChatProvider(_cloud_response())
+    monkeypatch.setattr(
+        plan_service,
+        "discover_models",
+        lambda selected_provider: (
+            catalog if selected_provider == provider else []
+        ),
+    )
+    monkeypatch.setattr(
+        plan_service,
+        "get_provider",
+        lambda selected_provider: adapter
+        if selected_provider == provider
+        else pytest.fail(f"Proveedor inesperado: {selected_provider}"),
+    )
+    return catalog, adapter
 
 
 def _enable_cloud(
@@ -438,6 +484,144 @@ def test_cloud_pwa_requires_confirmation_then_selective_apply(
         },
     )
     assert replayed.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("groq", "openai/gpt-oss-120b"),
+        ("openrouter", "openai/gpt-oss-120b"),
+        ("ollama", "newly-listed-model:cloud"),
+    ],
+)
+def test_cloud_pwa_uses_explicit_provider_preview_and_selective_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: ProviderName,
+    model: str,
+) -> None:
+    service, draft_path = _create_service(tmp_path)
+    original = draft_path.read_text(encoding="utf-8")
+    _, adapter = _install_fake_provider(monkeypatch, provider, model)
+    monkeypatch.setattr(webapps, "_plan_service", lambda _request: service)
+    client = TestClient(
+        webapps.create_app(obsidian_root=service.vault),
+        base_url="http://127.0.0.1",
+    )
+    selection = {"provider": provider, "model": model}
+
+    preview = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/preview",
+        json=selection,
+    )
+    assert preview.status_code == 200, preview.text
+    preview_body = preview.json()
+    request_payload = preview_body["request"]["payload"]
+    assert preview_body["provider"] == provider
+    assert preview_body["model"] == model
+    assert request_payload["model"] == model
+    assert request_payload["response_format"] == {"type": "json_object"}
+    assert "entregables_sin_tareas" in request_payload["messages"][1]["content"]
+    assert "ana.gomez@example.test" not in preview.text
+    assert len(preview_body["request_sha256"]) == 64
+
+    cancelled = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/generate",
+        json={"token": preview_body["token"], "confirm": False},
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["cancelled"] is True
+    assert adapter.requests == []
+    assert draft_path.read_text(encoding="utf-8") == original
+
+    preview = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/preview",
+        json=selection,
+    )
+    generated = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/generate",
+        json={"token": preview.json()["token"], "confirm": True},
+    )
+    assert generated.status_code == 200, generated.text
+    assert len(adapter.requests) == 1
+    assert adapter.requests[0].selection.provider == provider
+    assert adapter.requests[0].selection.model == model
+    assert draft_path.read_text(encoding="utf-8") == original
+
+    replayed = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/generate",
+        json={"token": preview.json()["token"], "confirm": True},
+    )
+    assert replayed.status_code == 409
+    assert len(adapter.requests) == 1
+
+    applied = client.post(
+        "/api/plan/drafts/PLAN-001/cloud-improve/apply",
+        json={
+            "token": generated.json()["token"],
+            "task_ids": ["task-001"],
+            "constraint_ids": [],
+        },
+    )
+    assert applied.status_code == 200, applied.text
+    updated, _ = parse_plan_markdown(draft_path.read_text(encoding="utf-8"))
+    assert len(updated["tareas"]) == 1
+    assert updated["restricciones"] == []
+
+
+@pytest.mark.parametrize("catalog_change", ["disappeared", "no-json"])
+def test_cloud_improvement_revalidates_catalog_before_sending(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalog_change: str,
+) -> None:
+    service, _ = _create_service(tmp_path)
+    catalog, adapter = _install_fake_provider(
+        monkeypatch,
+        "groq",
+        "openai/gpt-oss-120b",
+    )
+    preview = service.preview_cloud_improvement(
+        "PLAN-001",
+        provider="groq",
+        model="openai/gpt-oss-120b",
+    )
+    if catalog_change == "disappeared":
+        catalog.clear()
+        expected_error = "ya no aparece en el catálogo"
+    else:
+        catalog[0] = ModelInfo(
+            provider="groq",
+            model="openai/gpt-oss-120b",
+            supports_json=False,
+        )
+        expected_error = "ya no declara soporte JSON"
+
+    with pytest.raises(PlanServiceError, match=expected_error):
+        service.generate_cloud_improvement(preview)
+    assert adapter.requests == []
+
+
+def test_cloud_improvement_rejects_payload_changed_after_preview(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = _create_service(tmp_path)
+    _, adapter = _install_fake_provider(
+        monkeypatch,
+        "openrouter",
+        "provider/model",
+    )
+    preview = service.preview_cloud_improvement(
+        "PLAN-001",
+        provider="openrouter",
+        model="provider/model",
+    )
+    preview.request["payload"]["model"] = "provider/other-model"
+
+    with pytest.raises(PlanServiceError, match="payload del proveedor cambió"):
+        service.generate_cloud_improvement(preview)
+    assert adapter.requests == []
 
 
 def test_plan_cloud_generation_uses_ollama_account_without_balance_api(

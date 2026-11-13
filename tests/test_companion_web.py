@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -298,6 +299,97 @@ def test_cloud_send_uses_ollama_session_after_payload_confirmation(
     assert fake_client.chat_calls[0]["model"] == "gpt-oss:120b-cloud"
 
 
+def test_groq_preview_binds_provider_model_and_payload_until_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    sent_requests: list[Any] = []
+
+    class FakeProvider:
+        def preview_payload(self, chat_request: Any) -> dict[str, Any]:
+            return {
+                "model": chat_request.selection.model,
+                "messages": [
+                    {"role": item.role, "content": item.content}
+                    for item in chat_request.messages
+                ],
+                "stream": chat_request.stream,
+            }
+
+        def stream(self, chat_request: Any) -> Iterator[str]:
+            sent_requests.append(chat_request)
+            yield "respuesta remota"
+
+    fake_provider = FakeProvider()
+    monkeypatch.setattr(
+        companion_web,
+        "discover_models",
+        lambda _provider: [
+            ModelInfo(provider="groq", model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr(
+        companion_web,
+        "get_provider",
+        lambda *_args, **_kwargs: fake_provider,
+    )
+    client = _client(FakeClient())
+
+    preview = client.post(
+        "/api/companion/cloud-preview",
+        json={
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "query": "Pregunta privada",
+            "mode": "general",
+        },
+    )
+
+    assert preview.status_code == 200
+    assert preview.json()["provider"] == "groq"
+    assert preview.json()["payload"]["model"] == "openai/gpt-oss-120b"
+    assert sent_requests == []
+
+    response = client.post(
+        "/api/companion/cloud-send",
+        json={"token": preview.json()["token"], "confirm": True},
+    )
+
+    assert response.status_code == 200
+    assert sent_requests[0].selection.provider == "groq"
+    assert sent_requests[0].messages[-1].content == "Pregunta privada"
+    assert "respuesta remota" in response.text
+
+
+def test_remote_companion_preview_rejects_model_outside_discovered_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    monkeypatch.setattr(
+        companion_web,
+        "discover_models",
+        lambda _provider: [
+            ModelInfo(provider="groq", model="openai/gpt-oss-120b")
+        ],
+    )
+    client = _client(FakeClient())
+
+    response = client.post(
+        "/api/companion/cloud-preview",
+        json={
+            "provider": "groq",
+            "model": "unlisted/model",
+            "query": "Pregunta",
+            "mode": "general",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "catálogo actual" in response.json()["detail"]
+
+
 def test_companion_chat_streams_progress_text_and_traceable_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -520,7 +612,7 @@ def test_companion_pwa_assets_and_service_worker_are_local_and_installable() -> 
     assert "indexedDB.open(DATABASE_NAME" in script.text
     assert "textContent = message.content" in script.text
     assert "CACHEABLE_PATHS.has(requestUrl.pathname)" in worker.text
-    assert 'const CACHE_NAME = "companion-shell-v12"' in worker.text
+    assert 'const CACHE_NAME = "companion-shell-v13"' in worker.text
     assert "updateProfileRuleCount()" in script.text
     assert "options.num_ctx > 16_384" in script.text
     assert "/api/companion" not in worker.text

@@ -54,7 +54,13 @@
           <p id="mode-description" class="form-note mode-description">
             lee conversaciones completas · puede tardar y usar más CPU
           </p>
-          <label for="model-select">Modelo Ollama</label>
+          <label for="provider-select">Proveedor de inferencia</label>
+          <select id="provider-select">
+            <option value="ollama">Ollama local / Cloud</option>
+            <option value="groq">Groq</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+          <label for="model-select">Modelo descubierto</label>
           <div class="model-picker-row">
             <select id="model-select" disabled>
               <option value="">Comprobando modelos locales...</option>
@@ -294,10 +300,11 @@
           </div>
         </div>
         <p class="cloud-warning">
-          El JSON siguiente es el payload exacto para Ollama Cloud. Revisa pregunta,
+          El JSON siguiente es el payload exacto para el proveedor remoto seleccionado. Revisa pregunta,
           historial y, en modo Rápido, los pasajes. No incluye archivos adjuntos.
           Cancelar aquí no envía nada.
         </p>
+        <p id="cloud-provider-preview" class="cloud-warning"></p>
         <p class="cloud-payload-hash">
           SHA-256 del payload: <code id="cloud-payload-hash"></code>
         </p>

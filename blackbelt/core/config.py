@@ -153,6 +153,8 @@ PLAN_CLOUD_MODEL = os.getenv(
     "PLAN_CLOUD_MODEL",
     os.getenv("GHOSTWRITER_OLLAMA_CLOUD_MODEL", "gpt-oss:120b-cloud"),
 ).strip()
+PLAN_PROVIDER = os.getenv("PLAN_PROVIDER", "ollama").strip().casefold()
+PLAN_MODEL = os.getenv("PLAN_MODEL", PLAN_LOCAL_MODEL).strip()
 PLAN_NUM_CTX = int(os.getenv("PLAN_NUM_CTX", "4096"))
 PLAN_NUM_PREDICT = int(os.getenv("PLAN_NUM_PREDICT", "3000"))
 

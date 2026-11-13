@@ -51,6 +51,10 @@ TOOLS = {
         "module": "blackbelt.tools.companion",
         "description": "Compañero local con memoria documental y citas",
     },
+    "providers": {
+        "module": "blackbelt.tools.providers",
+        "description": "Gestiona credenciales de proveedores de IA",
+    },
     "audit": {
         "module": "blackbelt.tools.audit",
         "description": "Log de auditoria del Gatekeeper",

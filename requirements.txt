@@ -13,6 +13,7 @@ keyring>=25.0
 
 # IA local
 ollama>=0.4
+groq>=0.29
 
 # Red / utilidades
 requests>=2.31

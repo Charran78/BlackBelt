@@ -161,11 +161,17 @@
           </div>
 
           <div class="space-y-2 pt-3 border-t border-slate-800/80">
-            <label for="select-ai-backend" class="block text-[11px] text-slate-400">Motor de escritura</label>
-            <select id="select-ai-backend" onchange="updateAiBackendNotice()" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-slate-200 focus:border-purple-500 focus:outline-none">
-              <option value="local">Local · modelo configurado</option>
-              <option value="cloud">Ollama Cloud · modelo configurado</option>
+            <label for="select-ai-backend" class="block text-[11px] text-slate-400">Proveedor de IA</label>
+            <select id="select-ai-backend" onchange="loadProviderModels(this.value)" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-slate-200 focus:border-purple-500 focus:outline-none">
+              <option value="ollama">Ollama local / Ollama Cloud</option>
+              <option value="groq">Groq</option>
+              <option value="openrouter">OpenRouter</option>
             </select>
+            <label for="select-ai-model" class="block text-[11px] text-slate-400 mt-2">Modelo descubierto</label>
+            <select id="select-ai-model" onchange="updateAiBackendNotice()" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-slate-200 focus:border-purple-500 focus:outline-none">
+              <option value="">Consultando modelos...</option>
+            </select>
+            <p class="text-[10px] text-slate-500">Las claves se gestionan en el almacén seguro con <code>blackbelt run providers configure</code>.</p>
             <div id="ai-backend-notice" class="hidden rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-200" role="status"></div>
           </div>
         </div>
@@ -477,7 +483,24 @@
     </div>
   </div>
 
+  <dialog id="remote-preview-dialog" class="w-[min(900px,calc(100%-2rem))] max-h-[90vh] rounded-2xl border border-slate-700 bg-slate-900 p-0 text-slate-100 shadow-2xl backdrop:bg-slate-950/80">
+    <div class="flex max-h-[90vh] flex-col">
+      <div class="border-b border-slate-800 p-5">
+        <h2 class="text-base font-bold">Revisa el envío remoto</h2>
+        <p id="remote-preview-destination" class="mt-1 text-xs text-slate-300"></p>
+        <p class="mt-2 text-[11px] text-amber-300">Este contenido se enviará al proveedor indicado. Comprueba que tienes autorización para compartirlo.</p>
+      </div>
+      <pre id="remote-preview-payload" class="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-5 text-xs text-slate-300"></pre>
+      <div class="flex justify-end gap-2 border-t border-slate-800 p-4">
+        <button type="button" onclick="resolveRemotePreview(false)" class="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-200 hover:bg-slate-800">Cancelar</button>
+        <button type="button" onclick="resolveRemotePreview(true)" class="rounded-lg bg-purple-600 px-4 py-2 text-xs font-bold text-white hover:bg-purple-500">Confirmar envío</button>
+      </div>
+    </div>
+  </dialog>
+
   <script>
+    let remotePreviewResolver = null;
+
     // Global Application State
     const state = {
       platform: 'linkedin',
@@ -584,9 +607,15 @@
           throw new Error(data.detail || 'No se pudo leer la configuración de IA.');
         }
 
-        const backendSelect = document.getElementById('select-ai-backend');
-        backendSelect.options[0].textContent = `Local · ${data.local_model}`;
-        backendSelect.options[1].textContent = `Ollama Cloud · ${data.cloud_model}`;
+        const providerSelect = document.getElementById('select-ai-backend');
+        const storedProvider = localStorage.getItem('ghostwriter_provider');
+        providerSelect.value = [...providerSelect.options].some(
+          (option) => option.value === storedProvider
+        ) ? storedProvider : data.provider;
+        await loadProviderModels(
+          providerSelect.value,
+          localStorage.getItem('ghostwriter_model') || data.model
+        );
         state.authorHandle = data.author_handle || '';
         state.publicationName = data.publication_name || 'Bits To The Bone';
         if (localStorage.getItem('ghostwriter_author_name') === null) {
@@ -598,6 +627,46 @@
       } catch (error) {
         console.warn('Ghost Writer could not load AI configuration:', error);
       }
+    }
+
+    async function loadProviderModels(provider, preferredModel = '') {
+      const modelSelect = document.getElementById('select-ai-model');
+      modelSelect.replaceChildren(new Option('Consultando catálogo...', ''));
+      modelSelect.disabled = true;
+      try {
+        const response = await fetch(`/api/providers/${encodeURIComponent(provider)}/models`);
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || `No se pudo consultar ${provider}.`);
+        }
+        modelSelect.replaceChildren();
+        for (const model of data.models) {
+          const option = new Option(model.id, model.id);
+          modelSelect.add(option);
+        }
+        if (!data.models.length) {
+          modelSelect.add(new Option('No hay modelos disponibles', ''));
+        }
+        const selected = data.models.some((model) => model.id === preferredModel)
+          ? preferredModel
+          : (data.models[0]?.id || '');
+        modelSelect.value = selected;
+        modelSelect.disabled = !data.models.length;
+        localStorage.setItem('ghostwriter_provider', provider);
+        if (selected) localStorage.setItem('ghostwriter_model', selected);
+        if (provider !== 'ollama' && !data.credential_configured) {
+          showToast(
+            `Configura la clave de ${provider} con "blackbelt run providers configure ${provider}".`,
+            'warning'
+          );
+        }
+      } catch (error) {
+        modelSelect.replaceChildren(
+          new Option(`${error.message} Revisa la clave y vuelve a cargar.`, '')
+        );
+        modelSelect.disabled = true;
+      }
+      updateAiBackendNotice();
     }
 
     function loadWriterPreferences() {
@@ -623,14 +692,15 @@
     }
 
     function updateAiBackendNotice() {
-      const backend = document.getElementById('select-ai-backend').value;
+      const provider = document.getElementById('select-ai-backend').value;
+      const model = document.getElementById('select-ai-model').value;
       const notice = document.getElementById('ai-backend-notice');
       const badge = document.getElementById('api-status-badge').querySelector('span:last-child');
 
-      if (backend === 'cloud') {
-        notice.textContent = 'Cloud seleccionado: la fuente y las instrucciones de redacción se enviarán a Ollama Cloud. Se pedirá confirmación antes de cada envío.';
+      if (provider !== 'ollama' || /(:cloud|-cloud)$/i.test(model)) {
+        notice.textContent = `Proveedor remoto seleccionado: fuente e instrucciones se enviarán a ${provider} (${model}). Se pedirá confirmación antes de cada envío.`;
         notice.classList.remove('hidden');
-        badge.textContent = 'Ollama Cloud · envío remoto';
+        badge.textContent = `${provider} · envío remoto`;
         return;
       }
 
@@ -642,7 +712,8 @@
     // CORE AI GENERATION ENGINE
     async function generateContentFlow() {
       const sourceInput = document.getElementById('input-source-text').value.trim();
-      const backend = document.getElementById('select-ai-backend').value;
+      const provider = document.getElementById('select-ai-backend').value;
+      const model = document.getElementById('select-ai-model').value;
       const formatType = document.getElementById('select-format-type').value;
       const toneStyle = document.getElementById('select-tone').value;
       const targetPath = document.getElementById('select-obsidian-path').value;
@@ -651,15 +722,6 @@
 
       if (!sourceInput) {
         showToast('Por favor, introduce un enlace o borrador de texto en la fuente.', 'warning');
-        return;
-      }
-
-      if (
-        backend === 'cloud' &&
-        !window.confirm(
-          'Vas a enviar la fuente y las instrucciones de redacción a Ollama Cloud. ¿Quieres continuar?'
-        )
-      ) {
         return;
       }
 
@@ -803,15 +865,50 @@ Plataforma destino: ${state.platform}`;
         return;
       }
 
+      const remote = provider !== 'ollama' || /(:cloud|-cloud)$/i.test(model);
+      if (!model) {
+        showLoader(false);
+        showToast('Selecciona un modelo disponible antes de generar.', 'error');
+        return;
+      }
+
       try {
+        const generationPayload = {
+          provider,
+          model,
+          system_instruction: systemInstruction,
+          user_query: userQuery
+        };
+        if (remote) {
+          const previewResponse = await fetch('/api/ghostwriter/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(generationPayload)
+          });
+          const previewText = await previewResponse.text();
+          let preview;
+          try {
+            preview = previewText ? JSON.parse(previewText) : {};
+          } catch (parseError) {
+            throw new Error(
+              `El servidor respondió con un formato inesperado (HTTP ${previewResponse.status}).`
+            );
+          }
+          if (!previewResponse.ok) {
+            throw new Error(
+              formatApiError(preview.detail, previewResponse.status) ||
+              `No se pudo previsualizar el envío (HTTP ${previewResponse.status}).`
+            );
+          }
+          if (!await confirmRemotePreview(preview)) return;
+          generationPayload.preview_token = preview.token;
+          generationPayload.confirm_remote = true;
+        }
+
         const response = await fetch('/api/ghostwriter/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            backend,
-            system_instruction: systemInstruction,
-            user_query: userQuery
-          })
+          body: JSON.stringify(generationPayload)
         });
         const responseText = await response.text();
         let data;
@@ -839,11 +936,34 @@ Plataforma destino: ${state.platform}`;
 
         showToast('¡Borrador generado con éxito!', 'success');
       } catch (err) {
-        console.error(`Ghost Writer ${backend} generation error:`, err);
+        console.error(`Ghost Writer ${provider} generation error:`, err);
         showToast(err.message || 'Error al conectar con Ollama local.', 'error');
       } finally {
         showLoader(false);
       }
+    }
+
+    function confirmRemotePreview(preview) {
+      const dialog = document.getElementById('remote-preview-dialog');
+      document.getElementById('remote-preview-destination').textContent =
+        `${preview.provider} · ${preview.model} · SHA-256 ${preview.payload_sha256}`;
+      document.getElementById('remote-preview-payload').textContent =
+        JSON.stringify(preview.payload, null, 2);
+      return new Promise(resolve => {
+        remotePreviewResolver = resolve;
+        dialog.addEventListener('close', () => {
+          if (remotePreviewResolver) resolveRemotePreview(false);
+        }, { once: true });
+        dialog.showModal();
+      });
+    }
+
+    function resolveRemotePreview(confirmed) {
+      const resolver = remotePreviewResolver;
+      remotePreviewResolver = null;
+      if (resolver) resolver(confirmed);
+      const dialog = document.getElementById('remote-preview-dialog');
+      if (dialog.open) dialog.close();
     }
 
     function formatApiError(detail, status) {

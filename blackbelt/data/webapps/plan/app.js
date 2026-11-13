@@ -9,6 +9,7 @@ const state = {
   detail: null,
   installPrompt: null,
   toastTimer: null,
+  providerPreviewResolver: null,
   contextRequestId: 0,
   panoramaPreview: null,
   cloudWorkflow: null,
@@ -28,6 +29,15 @@ const elements = {
   dossiers: document.querySelector("#dossier-ids"),
   prepareForm: document.querySelector("#prepare-form"),
   prepareButton: document.querySelector("#prepare-button"),
+  provider: document.querySelector("#provider-select"),
+  model: document.querySelector("#model-select"),
+  providerNote: document.querySelector("#provider-note"),
+  providerPreviewDialog: document.querySelector("#provider-preview-dialog"),
+  providerPreviewDestination: document.querySelector("#provider-preview-destination"),
+  providerPreviewPayload: document.querySelector("#provider-preview-payload"),
+  providerPreviewHash: document.querySelector("#provider-preview-hash"),
+  cancelProviderPreview: document.querySelector("#cancel-provider-preview"),
+  confirmProviderPreview: document.querySelector("#confirm-provider-preview"),
   refreshButton: document.querySelector("#refresh-button"),
   printButton: document.querySelector("#print-button"),
   installButton: document.querySelector("#install-button"),
@@ -53,6 +63,70 @@ async function requestJson(path, options = {}) {
     throw new Error(payload.detail || `Error HTTP ${response.status}`);
   }
   return payload;
+}
+
+async function loadProviderModels(provider, preferredModel = "") {
+  elements.model.replaceChildren(node("option", "", "Consultando catálogo..."));
+  elements.model.disabled = true;
+  try {
+    const catalog = await requestJson(
+      `/api/providers/${encodeURIComponent(provider)}/models`,
+    );
+    elements.model.replaceChildren();
+    for (const model of catalog.models) {
+      const jsonStatus = model.supports_json === true
+        ? " · JSON"
+        : model.supports_json === false
+          ? " · sin JSON"
+          : " · JSON no verificado";
+      const option = node("option", "", `${model.id}${jsonStatus}`);
+      option.value = model.id;
+      option.disabled = model.supports_json === false;
+      const pricing = model.metadata?.pricing;
+      option.title = pricing
+        ? `Precio publicado por catálogo: ${JSON.stringify(pricing)}`
+        : "El catálogo no publica aquí información de precio.";
+      elements.model.append(option);
+    }
+    const usableModels = catalog.models.filter(
+      (item) => item.supports_json !== false,
+    );
+    const selected = usableModels.some((item) => item.id === preferredModel)
+      ? preferredModel
+      : (usableModels[0]?.id || "");
+    elements.model.value = selected;
+    elements.model.disabled = !selected;
+    localStorage.setItem("blackbelt-plan-provider", provider);
+    if (selected) localStorage.setItem("blackbelt-plan-model", selected);
+    elements.providerNote.textContent = provider === "ollama"
+      ? "El modo local no envía datos a la nube. Ollama Cloud exige revisar el payload."
+      : `Proveedor remoto ${provider}. Clave ${catalog.credential_configured ? "configurada" : "no configurada"} en keyring. Cada envío requiere revisión del payload.`;
+  } catch (error) {
+    elements.model.replaceChildren(node("option", "", error.message));
+    elements.model.disabled = true;
+    elements.providerNote.textContent =
+      `Configura la clave, si procede, con "blackbelt run providers configure ${provider}".`;
+  }
+}
+
+function requestPlanPreview(preview) {
+  elements.providerPreviewDestination.textContent =
+    `Destino: ${preview.provider} · ${preview.model}`;
+  elements.providerPreviewPayload.textContent = preview.preview;
+  elements.providerPreviewHash.textContent = preview.request_sha256;
+  elements.providerPreviewDialog.showModal();
+  return new Promise((resolve) => {
+    state.providerPreviewResolver = resolve;
+  });
+}
+
+function finishPlanPreview(confirmed) {
+  const resolve = state.providerPreviewResolver;
+  state.providerPreviewResolver = null;
+  if (elements.providerPreviewDialog.open) {
+    elements.providerPreviewDialog.close();
+  }
+  resolve?.(confirmed);
 }
 
 function node(tag, className, text) {
@@ -625,9 +699,15 @@ function renderCloudWorkflow() {
       node(
         "p",
         "cloud-summary",
-        `Modelo: ${workflow.preview.model} · Entregables sin tareas: ${
+        `Destino: ${workflow.preview.provider} · ${workflow.preview.model} · ` +
+          `Entregables sin tareas: ${
           workflow.preview.uncovered_deliverables.length
         } · SHA-256 de la solicitud: ${workflow.preview.request_sha256}`,
+      ),
+      node(
+        "p",
+        "cloud-summary",
+        "La cuota y el precio dependen del proveedor y pueden cambiar.",
       ),
     );
     const counts = workflow.preview.redaction_counts;
@@ -736,10 +816,23 @@ function renderCloudWorkflow() {
 }
 
 async function previewCloudImprovement(planId) {
+  const provider = elements.provider.value;
+  const model = elements.model.value;
+  const remote = provider !== "ollama" || /(:cloud|-cloud)$/i.test(model);
+  if (!model || !remote) {
+    showToast(
+      "Selecciona un modelo remoto para usar Cloud Improve.",
+      true,
+    );
+    return;
+  }
   try {
     const preview = await requestJson(
       `/api/plan/drafts/${encodeURIComponent(planId)}/cloud-improve/preview`,
-      { method: "POST", body: "{}" },
+      {
+        method: "POST",
+        body: JSON.stringify({ provider, model }),
+      },
     );
     state.cloudWorkflow = { phase: "preview", planId, preview };
     renderDetail();
@@ -752,7 +845,8 @@ async function confirmCloudGeneration() {
   const workflow = state.cloudWorkflow;
   if (!workflow || workflow.phase !== "preview") return;
   const approved = window.confirm(
-    `Se enviará a ${workflow.preview.model} exactamente el JSON mostrado. ` +
+    `Se enviará a ${workflow.preview.provider} (${workflow.preview.model}) ` +
+      "exactamente el JSON mostrado. " +
       "La redacción no garantiza anonimización completa. ¿Confirmas este envío?",
   );
   if (!approved) return;
@@ -1101,11 +1195,33 @@ async function preparePlan(event) {
     proposal_ids: proposalIds,
     meeting_ids: meetingIds,
     dossier_ids: dossierIds,
+    provider: elements.provider.value,
+    model: elements.model.value,
   };
+  const remote = payload.provider !== "ollama"
+    || /(:cloud|-cloud)$/i.test(payload.model);
+  if (!payload.model) {
+    showToast("Selecciona un modelo disponible.", true);
+    return;
+  }
 
   elements.prepareButton.disabled = true;
-  elements.prepareButton.textContent = "Generando con modelo local...";
+  elements.prepareButton.textContent = remote
+    ? "Preparando revisión del payload..."
+    : "Generando borrador local...";
   try {
+    if (remote) {
+      const preview = await requestJson("/api/plan/preview", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (!(await requestPlanPreview(preview))) {
+        showToast("Envío cancelado; no se llamó al modelo.");
+        return;
+      }
+      payload.confirm_remote = true;
+      payload.preview_sha256 = preview.request_sha256;
+    }
     const result = await requestJson("/api/plan/prepare", {
       method: "POST",
       body: JSON.stringify(payload),
@@ -1124,12 +1240,30 @@ async function preparePlan(event) {
     elements.prepareButton.disabled = !elements.client.value;
     elements.prepareButton.replaceChildren(
       node("span", "", "+"),
-      document.createTextNode(" Generar borrador local"),
+      document.createTextNode(
+        " Generar borrador con el proveedor seleccionado",
+      ),
     );
   }
 }
 
 elements.prepareForm.addEventListener("submit", preparePlan);
+elements.provider.addEventListener("change", () => {
+  loadProviderModels(elements.provider.value);
+});
+elements.model.addEventListener("change", () => {
+  localStorage.setItem("blackbelt-plan-model", elements.model.value);
+});
+elements.confirmProviderPreview.addEventListener("click", () =>
+  finishPlanPreview(true),
+);
+elements.cancelProviderPreview.addEventListener("click", () =>
+  finishPlanPreview(false),
+);
+elements.providerPreviewDialog.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  finishPlanPreview(false);
+});
 elements.client.addEventListener("change", () => {
   elements.project.value = "";
   loadClientSources();
@@ -1168,5 +1302,21 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+async function initializeProviderSelection() {
+  const configured = await requestJson("/api/plan/provider-default").catch(
+    () => ({ provider: "ollama", model: "" }),
+  );
+  const savedProvider = localStorage.getItem("blackbelt-plan-provider");
+  const provider = ["ollama", "groq", "openrouter"].includes(savedProvider)
+    ? savedProvider
+    : configured.provider;
+  elements.provider.value = provider;
+  await loadProviderModels(
+    provider,
+    localStorage.getItem("blackbelt-plan-model") || configured.model,
+  );
+}
+
+initializeProviderSelection();
 loadClients();
 loadWorkspace({ keepSelection: false });

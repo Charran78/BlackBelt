@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import tempfile
 import threading
 import unicodedata
@@ -16,6 +17,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Self
 
+import httpx
 import ollama
 import yaml
 from rich.console import Console
@@ -49,6 +51,16 @@ from blackbelt.knowledge.proposal_extractor import (
     extract_proposal,
 )
 from blackbelt.knowledge.provenance import parse_markdown_source
+from blackbelt.providers.chat import (
+    ChatMessage,
+    ChatRequest,
+    ModelSelection,
+    ProviderError,
+    ProviderName,
+    discover_models,
+    get_provider,
+)
+from blackbelt.providers.credentials import ProviderCredentialsError
 
 _PLAN_ID_PATTERN = re.compile(r"PLAN-(\d{3,})\Z")
 _IDENTIFIER_PATTERN = re.compile(r"[A-Z]{2,5}\d{3,}\Z")
@@ -162,6 +174,14 @@ class PreparedPlan:
 
 
 @dataclass(frozen=True)
+class PlanGenerationPreview:
+    """Exact provider request details shown before a remote plan generation."""
+
+    text: str
+    request_sha256: str
+
+
+@dataclass(frozen=True)
 class ApprovalResult:
     """Outcome of an approval or idempotent approval request."""
 
@@ -182,6 +202,9 @@ class CloudImprovementPreview:
     source_hashes: tuple[tuple[str, str], ...]
     plan_snapshot: dict[str, Any]
     narrative: str
+    provider: ProviderName
+    model: str
+    chat_request: ChatRequest | None
     request: dict[str, Any]
     request_hash: str
     source_aliases: tuple[tuple[str, str], ...]
@@ -259,13 +282,29 @@ class PlanService:
         dossiers: Iterable[str] | None = None,
         questions_only: bool = False,
         engine: str = "local",
+        provider: str | None = None,
+        model: str | None = None,
         template_id: str | None = None,
         dry_run: bool = False,
+        return_preview_data: bool = False,
+        confirm_remote: bool | None = None,
+        expected_request_hash: str | None = None,
         console: Console | None = None,
-    ) -> PreparedPlan | str:
+    ) -> PreparedPlan | str | PlanGenerationPreview:
         """Generate or preview one plan draft from explicit safe vault sources."""
         if engine not in {"local", "cloud"}:
             raise PlanServiceError("El motor debe ser local o cloud.", 2)
+        if provider is not None and provider not in {
+            "ollama",
+            "groq",
+            "openrouter",
+        }:
+            raise PlanServiceError("Proveedor no admitido para generar planes.", 2)
+        if model is not None and provider is None:
+            raise PlanServiceError(
+                "Seleccionar un modelo requiere indicar también el proveedor.",
+                2,
+            )
         template = self._resolve_template(template_id)
         (
             dossier,
@@ -314,17 +353,82 @@ class PlanService:
             questions_only,
             proposal_extraction,
         )
-        full_request = {
-            "model": self._model_name(engine),
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "format": "json",
-            "keep_alive": cfg.OLLAMA_KEEP_ALIVE,
-            "options": cfg.plan_ollama_options(),
-            "stream": False,
-        }
+        selected_provider = provider or "ollama"
+        selected_model = model or self._model_name(engine)
+        selected_engine = (
+            "cloud"
+            if selected_provider != "ollama"
+            or selected_model.casefold().endswith((":cloud", "-cloud"))
+            else "local"
+        )
+        is_remote = selected_engine == "cloud"
+        chat_messages = (
+            ChatMessage("system", system_prompt),
+            ChatMessage("user", user_prompt),
+        )
+        provider_request: ChatRequest | None = None
+        if provider is None:
+            full_request = {
+                "model": selected_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "format": "json",
+                "keep_alive": cfg.OLLAMA_KEEP_ALIVE,
+                "options": cfg.plan_ollama_options(),
+                "stream": False,
+            }
+        else:
+            try:
+                available_models = discover_models(selected_provider)
+            except (ProviderError, ProviderCredentialsError) as exc:
+                raise PlanServiceError(
+                    f"No se pudo validar el catálogo de {selected_provider}: {exc}",
+                    2,
+                ) from exc
+            selected_model_info = next(
+                (
+                    item
+                    for item in available_models
+                    if item.model == selected_model
+                ),
+                None,
+            )
+            if selected_model_info is None:
+                raise PlanServiceError(
+                    f"El modelo {selected_model} no aparece en el catálogo actual "
+                    f"de {selected_provider}. Actualiza los modelos y vuelve a "
+                    "seleccionarlo.",
+                    2,
+                )
+            if selected_model_info.supports_json is False:
+                raise PlanServiceError(
+                    f"El modelo {selected_model} no declara soporte JSON y no "
+                    "puede generar un plan con el contrato requerido.",
+                    2,
+                )
+            provider_request = ChatRequest(
+                selection=ModelSelection(selected_provider, selected_model),
+                messages=chat_messages,
+                max_tokens=cfg.PLAN_NUM_PREDICT,
+                response_format="json_object",
+                stream=False,
+                keep_alive=cfg.OLLAMA_KEEP_ALIVE
+                if selected_provider == "ollama"
+                else None,
+                provider_options=(
+                    cfg.plan_ollama_options()
+                    if selected_provider == "ollama"
+                    else {}
+                ),
+            )
+            provider_adapter = get_provider(selected_provider)
+            full_request = {
+                "provider": selected_provider,
+                "model": selected_model,
+                "payload": provider_adapter.preview_payload(provider_request),
+            }
         serialized_request = json.dumps(
             full_request,
             ensure_ascii=False,
@@ -339,25 +443,75 @@ class PlanService:
             )
 
         if dry_run:
-            preview = self._render_preview(engine, sources, full_request)
+            preview = self._render_preview(
+                selected_engine,
+                sources,
+                full_request,
+            )
+            if return_preview_data:
+                return PlanGenerationPreview(
+                    text=preview,
+                    request_sha256=hashlib.sha256(
+                        serialized_request.encode("utf-8")
+                    ).hexdigest(),
+                )
             return preview
 
-        if engine == "cloud":
-            active_console = console or Console()
-            self._render_preview_to_console(active_console, sources, full_request)
-            if not Confirm.ask(
-                "¿Confirmas el envío de esta solicitud a Ollama Cloud? "
-                "Verifica por separado que tienes autorización para compartir "
-                "los datos personales mostrados",
-                default=False,
-                console=active_console,
-            ):
+        request_sha256 = hashlib.sha256(
+            serialized_request.encode("utf-8")
+        ).hexdigest()
+        if expected_request_hash is not None:
+            if not re.fullmatch(r"[a-f0-9]{64}", expected_request_hash):
+                raise PlanServiceError(
+                    "El hash de previsualización no tiene un formato válido.",
+                    3,
+                )
+            if not secrets.compare_digest(expected_request_hash, request_sha256):
+                raise PlanServiceError(
+                    "Las fuentes o el payload cambiaron desde la previsualización. "
+                    "Revisa una nueva vista previa antes de enviar.",
+                    3,
+                )
+        if is_remote and confirm_remote is False:
+            raise PlanServiceError(
+                "Generación remota cancelada; no se envió nada.",
+                3,
+            )
+        if is_remote and confirm_remote is True and not expected_request_hash:
+            raise PlanServiceError(
+                "La generación remota requiere revisar el payload antes de enviar.",
+                3,
+            )
+        if is_remote and confirm_remote is None and console is None:
+            raise PlanServiceError(
+                "La generación remota requiere una previsualización y "
+                "confirmación explícitas antes de enviar.",
+                3,
+            )
+
+        if is_remote and console is not None:
+            active_console = console
+            active_console.print(
+                self._render_preview(selected_engine, sources, full_request),
+                markup=False,
+                highlight=False,
+            )
+            confirmed = confirm_remote
+            if confirmed is None:
+                confirmed = Confirm.ask(
+                    f"¿Confirmas el envío a {selected_provider} "
+                    f"({selected_model})? Verifica por separado que tienes "
+                    "autorización para compartir los datos mostrados",
+                    default=False,
+                    console=active_console,
+                )
+            if not confirmed:
                 self._write_audit(
                     {
                         "accion": "plan_generation_cancelled",
                         "plan_id": None,
-                        "proveedor": "ollama",
-                        "modelo": self._model_name(engine),
+                        "proveedor": selected_provider,
+                        "modelo": selected_model,
                         "fecha": datetime.now().astimezone().isoformat(),
                         "fuentes": [
                             {"id": source.identifier}
@@ -381,11 +535,22 @@ class PlanService:
         outcome = "error"
         generation_warnings = extraction_warnings
         try:
-            raw_response = self._model_call(
-                system_prompt,
-                user_prompt,
-                engine == "cloud",
-            )
+            if provider_request is None:
+                raw_response = self._model_call(
+                    system_prompt,
+                    user_prompt,
+                    is_remote,
+                )
+            else:
+                try:
+                    raw_response = get_provider(selected_provider).complete(
+                        provider_request
+                    )
+                except (ProviderError, ProviderCredentialsError) as exc:
+                    raise PlanServiceError(
+                        f"{selected_provider} no pudo generar el plan: {exc}",
+                        2,
+                    ) from exc
             generated = self._parse_model_response(raw_response)
             if proposal_extraction is not None:
                 generated, normalization_warnings = (
@@ -404,10 +569,12 @@ class PlanService:
                 generated,
                 sources,
                 template,
-                engine,
+                selected_engine,
                 questions_only,
                 project_note,
                 proposal_extraction,
+                provider=selected_provider,
+                model=selected_model,
             )
             issues = validate_plan(plan)
             errors = [issue for issue in issues if issue.level == "error"]
@@ -427,13 +594,13 @@ class PlanService:
             ).hexdigest()
             outcome = "ok"
         finally:
-            if engine == "cloud":
+            if is_remote:
                 self._write_audit(
                     {
                         "accion": "plan_generation_cloud",
                         "plan_id": plan.get("id") if plan else None,
-                        "proveedor": "ollama",
-                        "modelo": self._model_name(engine),
+                        "proveedor": selected_provider,
+                        "modelo": selected_model,
                         "fecha": datetime.now().astimezone().isoformat(),
                         "plantillas": [
                             {"id": template["id"], "version": template["version"]}
@@ -516,8 +683,17 @@ class PlanService:
     def preview_cloud_improvement(
         self,
         reference: str | Path,
+        *,
+        provider: ProviderName | None = None,
+        model: str | None = None,
     ) -> CloudImprovementPreview:
         """Build the exact, minimized Cloud request without sending it."""
+        if provider is None and model is not None:
+            raise PlanServiceError(
+                "Seleccionar un modelo para Cloud Improve requiere indicar "
+                "también el proveedor.",
+                2,
+            )
         draft_path = self._resolve_draft_path(reference)
         try:
             content = draft_path.read_text(encoding="utf-8")
@@ -739,18 +915,82 @@ class PlanService:
             sort_keys=True,
             separators=(",", ":"),
         )
-        model = self._model_name("cloud")
-        request = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "format": "json",
-            "keep_alive": cfg.OLLAMA_KEEP_ALIVE,
-            "options": cfg.plan_ollama_options(),
-            "stream": False,
-        }
+        selected_provider = provider or "ollama"
+        selected_model = model or self._model_name("cloud")
+        chat_request: ChatRequest | None = None
+        if provider is None:
+            request = {
+                "model": selected_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "format": "json",
+                "keep_alive": cfg.OLLAMA_KEEP_ALIVE,
+                "options": cfg.plan_ollama_options(),
+                "stream": False,
+            }
+        else:
+            if model is None:
+                raise PlanServiceError(
+                    "Cloud Improve requiere un modelo seleccionado explícitamente.",
+                    2,
+                )
+            if selected_provider == "ollama" and not selected_model.casefold().endswith(
+                (":cloud", "-cloud")
+            ):
+                raise PlanServiceError(
+                    "Cloud Improve requiere un modelo remoto; el modelo Ollama "
+                    "seleccionado es local.",
+                    2,
+                )
+            try:
+                available_models = discover_models(selected_provider)
+            except (ProviderError, ProviderCredentialsError) as exc:
+                raise PlanServiceError(
+                    f"No se pudo validar el catálogo de {selected_provider}: {exc}",
+                    2,
+                ) from exc
+            selected_info = next(
+                (item for item in available_models if item.model == selected_model),
+                None,
+            )
+            if selected_info is None:
+                raise PlanServiceError(
+                    f"El modelo {selected_model} no aparece en el catálogo actual "
+                    f"de {selected_provider}.",
+                    2,
+                )
+            if selected_info.supports_json is False:
+                raise PlanServiceError(
+                    f"El modelo {selected_model} no declara soporte JSON y no "
+                    "puede generar sugerencias con el contrato requerido.",
+                    2,
+                )
+            chat_request = ChatRequest(
+                selection=ModelSelection(selected_provider, selected_model),
+                messages=(
+                    ChatMessage("system", system_prompt),
+                    ChatMessage("user", user_prompt),
+                ),
+                max_tokens=cfg.PLAN_NUM_PREDICT,
+                response_format="json_object",
+                stream=False,
+                keep_alive=cfg.OLLAMA_KEEP_ALIVE
+                if selected_provider == "ollama"
+                else None,
+                provider_options=(
+                    cfg.plan_ollama_options()
+                    if selected_provider == "ollama"
+                    else {}
+                ),
+            )
+            adapter = get_provider(selected_provider)
+            request = {
+                "provider": selected_provider,
+                "model": selected_model,
+                "payload": adapter.preview_payload(chat_request),
+            }
         serialized_request = json.dumps(
             request,
             ensure_ascii=False,
@@ -780,6 +1020,9 @@ class PlanService:
             ),
             plan_snapshot=json.loads(canonical_plan_json(plan)),
             narrative=narrative,
+            provider=selected_provider,
+            model=selected_model,
+            chat_request=chat_request,
             request=request,
             request_hash=hashlib.sha256(
                 serialized_request.encode("utf-8")
@@ -800,8 +1043,8 @@ class PlanService:
             {
                 "accion": "plan_cloud_improvement_cancelled",
                 "plan_id": preview.plan_id,
-                "proveedor": "ollama",
-                "modelo": preview.request["model"],
+                "proveedor": preview.provider,
+                "modelo": preview.model,
                 "fecha": datetime.now().astimezone().isoformat(),
                 "payload_enviado": False,
                 "fuentes": len(preview.source_aliases),
@@ -832,26 +1075,71 @@ class PlanService:
         preview: CloudImprovementPreview,
     ) -> CloudImprovementResult:
         """Send one confirmed request and validate suggestions without writing."""
-        if (
-            self._model_name("cloud") != preview.request.get("model")
-            or cfg.OLLAMA_KEEP_ALIVE != preview.request.get("keep_alive")
-            or cfg.plan_ollama_options() != preview.request.get("options")
-        ):
-            raise PlanServiceError(
-                "La configuración del modelo cambió después de la vista "
-                "previa. Revisa el nuevo payload antes de enviarlo.",
-                1,
+        if preview.chat_request is None:
+            if (
+                self._model_name("cloud") != preview.model
+                or cfg.OLLAMA_KEEP_ALIVE != preview.request.get("keep_alive")
+                or cfg.plan_ollama_options() != preview.request.get("options")
+            ):
+                raise PlanServiceError(
+                    "La configuración del modelo cambió después de la vista "
+                    "previa. Revisa el nuevo payload antes de enviarlo.",
+                    1,
+                )
+        else:
+            try:
+                available_models = discover_models(preview.provider)
+            except (ProviderError, ProviderCredentialsError) as exc:
+                raise PlanServiceError(
+                    f"No se pudo validar el catálogo de {preview.provider}: {exc}",
+                    2,
+                ) from exc
+            selected_info = next(
+                (
+                    item
+                    for item in available_models
+                    if item.model == preview.model
+                ),
+                None,
             )
+            if selected_info is None:
+                raise PlanServiceError(
+                    f"El modelo {preview.model} ya no aparece en el catálogo "
+                    f"de {preview.provider}; no se envió la solicitud.",
+                    2,
+                )
+            if selected_info.supports_json is False:
+                raise PlanServiceError(
+                    f"El modelo {preview.model} ya no declara soporte JSON; "
+                    "no se envió la solicitud.",
+                    2,
+                )
+            adapter = get_provider(preview.provider)
+            current_payload = adapter.preview_payload(preview.chat_request)
+            if current_payload != preview.request.get("payload"):
+                raise PlanServiceError(
+                    "El payload del proveedor cambió desde la vista previa; "
+                    "vuelve a revisarlo antes de enviar.",
+                    2,
+                )
+
         self._assert_cloud_preview_current(preview)
         request = preview.request
-        messages = request["messages"]
-        system_prompt = messages[0]["content"]
-        user_prompt = messages[1]["content"]
         response_hash: str | None = None
         outcome = "error"
         suggestions: CloudImprovementResult | None = None
         try:
-            raw_response = self._model_call(system_prompt, user_prompt, True)
+            if preview.chat_request is None:
+                messages = request["messages"]
+                system_prompt = messages[0]["content"]
+                user_prompt = messages[1]["content"]
+                raw_response = self._model_call(
+                    system_prompt,
+                    user_prompt,
+                    True,
+                )
+            else:
+                raw_response = adapter.complete(preview.chat_request)
             response_hash = hashlib.sha256(
                 raw_response.encode("utf-8")
             ).hexdigest()
@@ -863,13 +1151,30 @@ class PlanService:
             self._assert_cloud_preview_current(preview)
             outcome = "ok"
             return suggestions
+        except (ProviderError, ProviderCredentialsError) as exc:
+            raise PlanServiceError(
+                f"No se pudo completar la solicitud con {preview.provider} "
+                f"({type(exc).__name__}).",
+                2,
+            ) from exc
+        except (
+            httpx.HTTPError,
+            OSError,
+            ollama.RequestError,
+            ollama.ResponseError,
+        ) as exc:
+            raise PlanServiceError(
+                f"No se pudo completar la solicitud con {preview.provider} "
+                f"({type(exc).__name__}).",
+                2,
+            ) from exc
         finally:
             self._write_audit(
                 {
                     "accion": "plan_cloud_improvement_generation",
                     "plan_id": preview.plan_id,
-                    "proveedor": "ollama",
-                    "modelo": request["model"],
+                    "proveedor": preview.provider,
+                    "modelo": preview.model,
                     "fecha": datetime.now().astimezone().isoformat(),
                     "hash_solicitud": preview.request_hash,
                     "hash_resultado": response_hash,
@@ -2457,13 +2762,19 @@ class PlanService:
         sources: list[PlanSource],
         request: dict[str, Any],
     ) -> str:
+        payload = request.get("payload")
+        model = request.get("model")
+        if not isinstance(model, str) and isinstance(payload, dict):
+            candidate = payload.get("model")
+            model = candidate if isinstance(candidate, str) else "desconocido"
+        provider = request.get("provider", "ollama")
         source_list = "\n".join(
             f"- {source.relative_path} | {source.section} | "
             f"sha256:{source.content_hash}"
             for source in sources
         )
         return (
-            f"Motor: {engine}\nModelo: {request['model']}\n"
+            f"Motor: {engine}\nProveedor: {provider}\nModelo: {model}\n"
             "Datos de cliente: sí; verifica autorización aparte.\n"
             f"Fuentes:\n{source_list}\n"
             "Solicitud exacta (sin enviar en --dry-run):\n"
@@ -2505,6 +2816,9 @@ class PlanService:
         questions_only: bool,
         project_note: VaultNote | None,
         proposal: ProposalExtraction | None,
+        *,
+        provider: str = "ollama",
+        model: str | None = None,
     ) -> dict[str, Any]:
         created = datetime.now().astimezone().date().isoformat()
         extracted_deliverables = (
@@ -2713,8 +3027,8 @@ class PlanService:
             ],
             "generacion": {
                 "motor": engine,
-                "proveedor": "ollama",
-                "modelo": self._model_name(engine),
+                "proveedor": provider,
+                "modelo": model or self._model_name(engine),
                 "fecha": datetime.now().astimezone().isoformat(timespec="seconds"),
             },
             "entregables": [] if questions_only else deliverables,

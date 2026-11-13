@@ -56,6 +56,15 @@ from blackbelt.knowledge.companion_web_sources import (
     validate_public_url,
 )
 from blackbelt.knowledge.semantic_search import SemanticSearchError
+from blackbelt.providers.chat import (
+    ChatMessage,
+    ChatRequest,
+    ModelSelection,
+    ProviderError,
+    discover_models,
+    get_provider,
+)
+from blackbelt.providers.credentials import ProviderCredentialsError
 
 LOGGER = logging.getLogger(__name__)
 router = APIRouter()
@@ -180,6 +189,7 @@ class CompanionCloudPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     query: str = Field(min_length=1, max_length=5_000)
+    provider: Literal["ollama", "groq", "openrouter"] = "ollama"
     model: str | None = Field(default=None, min_length=1, max_length=128)
     mode: Literal["general", "quick"] = "general"
     history: list[CompanionHistoryMessage] = Field(
@@ -342,9 +352,25 @@ def companion_cloud_preview(
     payload: CompanionCloudPreviewRequest,
     request: Request,
 ) -> dict[str, Any]:
-    """Prepare the exact text-only Cloud request; never contact Ollama Cloud."""
+    """Prepare the exact remote request; never contact its chat endpoint."""
+    provider = payload.provider
     model = payload.model or cfg.COMPANION_CLOUD_MODEL
-    model_spec = _require_cloud_model_ready(model, request)
+    model_spec: CloudModel | None = None
+    if provider == "ollama":
+        model_spec = _require_cloud_model_ready(model, request)
+    else:
+        try:
+            available_models = discover_models(provider)
+        except (ProviderError, ProviderCredentialsError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if model not in {item.model for item in available_models}:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El modelo {model} no aparece en el catálogo actual de "
+                    f"{provider}. Actualiza la lista y vuelve a seleccionarlo."
+                ),
+            )
 
     history = _history_messages(payload)
     references: tuple[MemoryReference, ...] = ()
@@ -384,7 +410,7 @@ def companion_cloud_preview(
             num_predict=cfg.COMPANION_NUM_PREDICT,
         ).model_dump()
     )
-    if options["num_ctx"] > model_spec.context_tokens:
+    if model_spec and options["num_ctx"] > model_spec.context_tokens:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -392,15 +418,35 @@ def companion_cloud_preview(
                 f"{model_spec.context_description} tokens de contexto."
             ),
         )
-    cloud_request: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "options": options,
-        "keep_alive": "0",
-        "stream": True,
-    }
+    selection = ModelSelection(provider, model)
+    chat_request = ChatRequest(
+        selection=selection,
+        messages=tuple(
+            ChatMessage(
+                role=message["role"],
+                content=message["content"],
+                images=tuple(message.get("images", ())),
+            )
+            for message in messages
+        ),
+        temperature=options["temperature"],
+        max_tokens=options["num_predict"],
+        stream=True,
+        keep_alive="0" if provider == "ollama" else None,
+        provider_options=options if provider == "ollama" else {},
+    )
+    provider_client = get_provider(
+        provider,
+        ollama_client=(
+            _ollama_client(request)
+            if provider == "ollama"
+            else None
+        ),
+    )
+    cloud_request = provider_client.preview_payload(chat_request)
+    preview_envelope = {"provider": provider, "payload": cloud_request}
     serialized = json.dumps(
-        cloud_request,
+        preview_envelope,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -413,6 +459,7 @@ def companion_cloud_preview(
         limit_display = f"{_MAX_CLOUD_PAYLOAD_CHARS:,}".replace(",", ".")
         excess_display = f"{excess_chars:,}".replace(",", ".")
         source_chars_display = f"{source_chars:,}".replace(",", ".")
+        provider_label = "Ollama" if provider == "ollama" else provider
         raise HTTPException(
             status_code=422,
             detail=(
@@ -427,15 +474,17 @@ def companion_cloud_preview(
                 )
                 + "También puedes iniciar una conversación nueva para excluir "
                 "el historial o usar el modo General para omitir pasajes de memoria. "
-                "No se envió nada a Ollama."
+                + f"No se envió nada a {provider_label}."
             ),
         )
 
     token = str(uuid4())
     preview = {
+        "provider": provider,
         "model": model,
         "mode": payload.mode,
         "request": cloud_request,
+        "chat_request": chat_request,
         "request_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
         "references": references,
         "jina_source": payload.jina_source,
@@ -453,6 +502,7 @@ def companion_cloud_preview(
         previews[token] = preview
 
     return {
+        "provider": preview["provider"],
         "token": token,
         "model": preview["model"],
         "mode": preview["mode"],
@@ -462,7 +512,7 @@ def companion_cloud_preview(
         "web_sources": (
             [_jina_source_metadata(payload.jina_source)] if payload.jina_source else []
         ),
-        "context_limit": model_spec.context_tokens,
+        "context_limit": model_spec.context_tokens if model_spec else None,
         "expires_in_seconds": _CLOUD_PREVIEW_TTL_SECONDS,
     }
 
@@ -476,7 +526,8 @@ def companion_cloud_send(
     preview = _consume_cloud_preview(payload.token, request)
     if not payload.confirm:
         return {"cancelled": True}
-    _require_cloud_model_ready(preview["model"], request)
+    if preview["provider"] == "ollama":
+        _require_cloud_model_ready(preview["model"], request)
 
     events: queue.Queue[dict[str, Any] | None] = queue.Queue()
     cancelled = threading.Event()
@@ -498,14 +549,25 @@ def companion_cloud_send(
                     "event": "status",
                     "data": {
                         "message": (
-                            f"Enviando el payload confirmado a Ollama Cloud "
-                            f"({preview['model']})..."
+                            f"Enviando el payload confirmado a "
+                            f"{preview['provider']} ({preview['model']})..."
                         )
                     },
                 }
             )
-            response = _ollama_client(request).chat(**preview["request"])
-            answer = _stream_response(response, events, cancelled)
+            provider = get_provider(
+                preview["provider"],
+                ollama_client=(
+                    _ollama_client(request)
+                    if preview["provider"] == "ollama"
+                    else None
+                ),
+            )
+            answer = _stream_provider_response(
+                provider.stream(preview["chat_request"]),
+                events,
+                cancelled,
+            )
             if cancelled.is_set():
                 return
             if not answer.strip():
@@ -513,7 +575,9 @@ def companion_cloud_send(
                     {
                         "event": "error",
                         "data": {
-                            "message": "Ollama Cloud devolvió una respuesta vacía."
+                            "message": (
+                                f"{preview['provider']} devolvió una respuesta vacía."
+                            )
                         },
                     }
                 )
@@ -525,6 +589,7 @@ def companion_cloud_send(
                         "references": [
                             _reference_payload(item) for item in preview["references"]
                         ],
+                        "provider": preview["provider"],
                         "model": preview["model"],
                         "mode": preview["mode"],
                         "attachments": [],
@@ -543,9 +608,11 @@ def companion_cloud_send(
             OSError,
             TimeoutError,
             ValueError,
+            ProviderError,
+            ProviderCredentialsError,
         ) as exc:
             LOGGER.warning(
-                "Companion Cloud interaction failed (%s): %s",
+                "Companion remote interaction failed (%s): %s",
                 type(exc).__name__,
                 _safe_error(exc),
             )
@@ -1379,6 +1446,26 @@ def _stream_response(
             if cancelled.is_set():
                 break
             content = _chunk_text(chunk)
+            if content:
+                answer.append(content)
+                events.put({"event": "token", "data": {"text": content}})
+    finally:
+        if callable(close):
+            close()
+    return "".join(answer)
+
+
+def _stream_provider_response(
+    response: Iterator[str],
+    events: queue.Queue[dict[str, Any] | None],
+    cancelled: threading.Event,
+) -> str:
+    answer: list[str] = []
+    close = getattr(response, "close", None)
+    try:
+        for content in response:
+            if cancelled.is_set():
+                break
             if content:
                 answer.append(content)
                 events.put({"event": "token", "data": {"text": content}})

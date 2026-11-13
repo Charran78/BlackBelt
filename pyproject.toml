@@ -10,6 +10,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "keyring>=25.0",
     "ollama>=0.4",
+    "groq>=0.29",
     "requests>=2.31",
     "psutil>=5.9",
     "plotext>=5.3",

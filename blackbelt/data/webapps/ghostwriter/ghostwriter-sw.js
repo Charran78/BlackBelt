@@ -1,4 +1,4 @@
-const CACHE_NAME = "ghostwriter-shell-v10";
+const CACHE_NAME = "ghostwriter-shell-v12";
 const APP_SHELL = "/ghostwriter/";
 const APP_ASSETS = [
   APP_SHELL,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 import logging
 import os
 import re
@@ -19,6 +21,7 @@ from typing import Any, Literal
 from urllib.parse import quote, urlencode, urlsplit
 from xml.etree import ElementTree
 
+import httpx
 import ollama
 import requests
 import yaml
@@ -47,6 +50,7 @@ from blackbelt.knowledge.plan_service import (
     ApprovalResult,
     CloudImprovementPreview,
     CloudImprovementResult,
+    PlanGenerationPreview,
     PlanService,
     PlanServiceError,
 )
@@ -55,6 +59,18 @@ from blackbelt.knowledge.project_hub import (
     ProjectHubError,
     ProjectHubService,
     ProjectSourceOption,
+)
+from blackbelt.providers.chat import (
+    ChatMessage,
+    ChatRequest,
+    ModelSelection,
+    ProviderError,
+    discover_models,
+    get_provider,
+)
+from blackbelt.providers.credentials import (
+    ProviderCredentialsError,
+    has_api_key,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -77,6 +93,8 @@ _MAX_CONTEXT = 32768
 _MAX_LOCAL_PREDICT = 4096
 _MAX_CLOUD_PREDICT = 16384
 _MAX_RESPONSE_TEXT = 100000
+_GHOSTWRITER_PREVIEW_TTL_SECONDS = 900
+_MAX_GHOSTWRITER_PREVIEWS = 16
 
 
 class RedditFeedItem(BaseModel):
@@ -98,7 +116,21 @@ class RedditFeedResponse(BaseModel):
 class GhostWriterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    backend: Literal["local", "cloud"] = "local"
+    backend: Literal["local", "cloud"] | None = None
+    provider: Literal["ollama", "groq", "openrouter"] | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=256)
+    confirm_remote: bool = False
+    preview_token: str | None = Field(default=None, max_length=36)
+    system_instruction: str = Field(min_length=1, max_length=16000)
+    user_query: str = Field(min_length=1, max_length=32000)
+
+
+class GhostWriterPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backend: Literal["local", "cloud"] | None = None
+    provider: Literal["ollama", "groq", "openrouter"] | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=256)
     system_instruction: str = Field(min_length=1, max_length=16000)
     user_query: str = Field(min_length=1, max_length=32000)
 
@@ -106,6 +138,8 @@ class GhostWriterRequest(BaseModel):
 class GhostWriterConfig(BaseModel):
     local_model: str
     cloud_model: str
+    provider: Literal["ollama", "groq", "openrouter"]
+    model: str
     author_name: str
     author_handle: str
     publication_name: str
@@ -225,6 +259,10 @@ class PlanPrepareRequest(BaseModel):
     proposal_ids: list[str] | None = Field(default=None, max_length=10)
     meeting_ids: list[str] | None = Field(default=None, max_length=10)
     dossier_ids: list[str] | None = Field(default=None, max_length=10)
+    provider: Literal["ollama", "groq", "openrouter"] | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=256)
+    confirm_remote: bool = False
+    preview_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class PlanConfirmationRequest(BaseModel):
@@ -317,12 +355,20 @@ class PlanPrepareResponse(BaseModel):
 class PlanCloudImprovementPreviewResponse(BaseModel):
     token: str
     plan_id: str
+    provider: Literal["ollama", "groq", "openrouter"]
     model: str
     request: dict[str, Any]
     request_sha256: str
     uncovered_deliverables: list[str]
     redaction_counts: dict[str, int]
     privacy_notice: str
+
+
+class PlanCloudImprovementPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    provider: Literal["ollama", "groq", "openrouter"] | None = None
+    model: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class PlanCloudImprovementGenerateRequest(BaseModel):
@@ -396,6 +442,7 @@ def create_app(
         _RequestSizeLimitMiddleware,
         max_bytes=_MAX_REQUEST_BYTES,
     )
+    app.add_middleware(_SameOriginApiMiddleware)
     app.state.ollama_client_factory = ollama_client_factory
     app.state.assets_root = assets_root or _assets_root()
     app.state.obsidian_root = obsidian_root
@@ -409,6 +456,8 @@ def create_app(
     app.state.companion_deep_preview_lock = threading.Lock()
     app.state.companion_cloud_previews = {}
     app.state.companion_cloud_preview_lock = threading.Lock()
+    app.state.ghostwriter_previews = {}
+    app.state.ghostwriter_preview_lock = threading.Lock()
     app.state.companion_attachment_store = AttachmentStore()
     app.include_router(companion_router)
 
@@ -613,6 +662,19 @@ def create_app(
             ],
             approved_exists=True,
         )
+
+    @app.get(
+        "/api/plan/provider-default",
+        response_model=None,
+    )
+    async def plan_provider_default() -> dict[str, str]:
+        provider = cfg.PLAN_PROVIDER
+        if provider not in {"ollama", "groq", "openrouter"}:
+            provider = "ollama"
+        return {
+            "provider": provider,
+            "model": cfg.PLAN_MODEL if provider == "ollama" else "",
+        }
 
     @app.get(
         "/api/plan/clients",
@@ -862,12 +924,12 @@ def create_app(
     )
     async def plan_cloud_improvement_preview(
         plan_id: str,
+        payload: PlanCloudImprovementPreviewRequest,
         request: Request,
         response: Response,
     ) -> PlanCloudImprovementPreviewResponse:
         response.headers["Cache-Control"] = "no-store"
-        configured_model = cfg.PLAN_CLOUD_MODEL
-        if get_cloud_model(configured_model) is None:
+        if payload.provider is None and get_cloud_model(cfg.PLAN_CLOUD_MODEL) is None:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -882,8 +944,12 @@ def create_app(
                 service.drafts_dir.resolve(strict=True)
             )
             preview = await run_in_threadpool(
-                service.preview_cloud_improvement,
-                plan_id,
+                partial(
+                    service.preview_cloud_improvement,
+                    plan_id,
+                    provider=payload.provider,
+                    model=payload.model,
+                )
             )
         except (PlanServiceError, OSError, ValueError) as exc:
             if isinstance(exc, PlanServiceError):
@@ -893,15 +959,6 @@ def create_app(
                 detail="El plan no está en la carpeta de revisión de Obsidian.",
             ) from exc
 
-        model = preview.request.get("model")
-        if not isinstance(model, str) or get_cloud_model(model) is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Plan Cloud solo admite modelos del catálogo Cloud permitido "
-                    "por BlackBelt."
-                ),
-            )
         token = secrets.token_urlsafe(32)
         _store_plan_cloud_state(
             request,
@@ -911,13 +968,15 @@ def create_app(
         return PlanCloudImprovementPreviewResponse(
             token=token,
             plan_id=preview.plan_id,
-            model=preview.request["model"],
+            provider=preview.provider,
+            model=preview.model,
             request=preview.request,
             request_sha256=preview.request_hash,
             uncovered_deliverables=list(preview.gaps),
             redaction_counts=preview.redaction_counts,
             privacy_notice=(
-                "La vista previa muestra la solicitud Ollama completa. Se "
+                f"La vista previa muestra la solicitud completa a "
+                f"{preview.provider} ({preview.model}). Se "
                 "sustituyen IDs y nombres conocidos, importes, teléfonos, "
                 "emails y URLs. La redacción automática no garantiza "
                 "anonimización: revisa también los detalles indirectamente "
@@ -979,8 +1038,10 @@ def create_app(
                 plan_id=plan_id,
                 cancelled=True,
             )
-        model = preview.request.get("model")
-        if not isinstance(model, str) or get_cloud_model(model) is None:
+        if (
+            preview.chat_request is None
+            and get_cloud_model(preview.model) is None
+        ):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1146,6 +1207,49 @@ def create_app(
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
 
     @app.post(
+        "/api/plan/preview",
+        response_model=None,
+    )
+    async def plan_prepare_preview(
+        payload: PlanPrepareRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, Any]:
+        """Build an exact plan request preview without contacting its model."""
+        response.headers["Cache-Control"] = "no-store"
+        service = _plan_service(request)
+        try:
+            preview = await run_in_threadpool(
+                partial(
+                    service.prepare,
+                    client=payload.client_id,
+                    project=payload.project_id or None,
+                    proposal=payload.proposal_id or None,
+                    proposals=payload.proposal_ids,
+                    meetings=payload.meeting_ids,
+                    dossiers=payload.dossier_ids,
+                    engine="local",
+                    provider=payload.provider,
+                    model=payload.model,
+                    dry_run=True,
+                    return_preview_data=True,
+                )
+            )
+        except PlanServiceError as exc:
+            raise _plan_http_error(exc, service.vault) from exc
+        if not isinstance(preview, PlanGenerationPreview):
+            raise HTTPException(
+                status_code=500,
+                detail="No se pudo construir la previsualización del proveedor.",
+            )
+        return {
+            "preview": preview.text,
+            "request_sha256": preview.request_sha256,
+            "provider": payload.provider or "ollama",
+            "model": payload.model or cfg.PLAN_LOCAL_MODEL,
+        }
+
+    @app.post(
         "/api/plan/prepare",
         response_model=PlanPrepareResponse,
         status_code=201,
@@ -1168,6 +1272,10 @@ def create_app(
                     meetings=payload.meeting_ids,
                     dossiers=payload.dossier_ids,
                     engine="local",
+                    provider=payload.provider,
+                    model=payload.model,
+                    confirm_remote=payload.confirm_remote,
+                    expected_request_hash=payload.preview_sha256,
                 )
             )
         except PlanServiceError as exc:
@@ -1548,6 +1656,8 @@ def create_app(
         return GhostWriterConfig(
             local_model=_ollama_model("local"),
             cloud_model=_ollama_model("cloud"),
+            provider=_ghostwriter_provider(),
+            model=_ghostwriter_default_model(),
             author_name=os.getenv("GHOSTWRITER_AUTHOR_NAME", "").strip(),
             author_handle=os.getenv("GHOSTWRITER_AUTHOR_HANDLE", "").strip(),
             publication_name=os.getenv(
@@ -1559,6 +1669,175 @@ def create_app(
                 "#newsletter #tech #sistemas #ia",
             ).strip(),
         )
+
+    @app.get("/api/providers/{provider}/models")
+    async def provider_models(
+        provider: Literal["ollama", "groq", "openrouter"],
+        request: Request,
+    ) -> dict[str, Any]:
+        """Discover models from one explicit provider without exposing keys."""
+        try:
+            models = await run_in_threadpool(
+                discover_models,
+                provider,
+                ollama_client=(
+                    _make_ollama_client(request.app.state.ollama_client_factory)
+                    if provider == "ollama"
+                    else None
+                ),
+            )
+        except (ProviderError, ProviderCredentialsError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (httpx.HTTPError, OSError, ollama.RequestError, ollama.ResponseError) as exc:
+            LOGGER.warning(
+                "Provider model discovery failed (%s): %s",
+                type(exc).__name__,
+                _safe_ollama_error(exc),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"No se pudo consultar el catálogo de {provider}.",
+            ) from exc
+        try:
+            configured = (
+                True if provider == "ollama" else has_api_key(provider)
+            )
+        except ProviderCredentialsError:
+            configured = False
+        return {
+            "provider": provider,
+            "credential_configured": configured,
+            "models": [
+                {
+                    "id": item.model,
+                    "context_tokens": item.context_tokens,
+                    "supports_json": item.supports_json,
+                    "supports_vision": item.supports_vision,
+                    "metadata": item.metadata,
+                }
+                for item in models
+            ],
+        }
+
+    @app.post("/api/ghostwriter/preview")
+    async def ghostwriter_preview(
+        payload: GhostWriterPreviewRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, Any]:
+        """Create an exact, one-use preview before any remote generation."""
+        response.headers["Cache-Control"] = "no-store"
+        if payload.provider is None:
+            if payload.backend != "cloud":
+                raise HTTPException(
+                    status_code=422,
+                    detail="Selecciona explícitamente el proveedor y el modelo.",
+                )
+            selection = ModelSelection("ollama", _ollama_model("cloud"))
+        else:
+            if payload.model is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Selecciona un modelo para el proveedor elegido.",
+                )
+            selection = ModelSelection(payload.provider, payload.model)
+        remote = selection.provider != "ollama" or _is_cloud_model(selection.model)
+        if not remote:
+            raise HTTPException(
+                status_code=422,
+                detail="La vista previa solo es necesaria para modelos remotos.",
+            )
+
+        ollama_client = (
+            _make_ollama_client(request.app.state.ollama_client_factory)
+            if selection.provider == "ollama"
+            else None
+        )
+        try:
+            available_models = await run_in_threadpool(
+                discover_models,
+                selection.provider,
+                ollama_client=ollama_client,
+            )
+        except (ProviderError, ProviderCredentialsError) as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except (httpx.HTTPError, OSError, ollama.RequestError, ollama.ResponseError) as exc:
+            LOGGER.warning(
+                "Ghost Writer model discovery failed (%s)",
+                type(exc).__name__,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=f"No se pudo consultar el catálogo de {selection.provider}.",
+            ) from exc
+        if selection.model not in {item.model for item in available_models}:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"El modelo {selection.model} no aparece en el catálogo actual "
+                    f"de {selection.provider}."
+                ),
+            )
+
+        chat_request = _ghostwriter_chat_request(
+            selection,
+            payload.system_instruction,
+            payload.user_query,
+        )
+        provider_client = get_provider(
+            selection.provider,
+            ollama_client=ollama_client,
+        )
+        provider_payload = provider_client.preview_payload(chat_request)
+        serialized_payload = json.dumps(
+            {"provider": selection.provider, "payload": provider_payload},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(serialized_payload.encode("utf-8")) > _MAX_REQUEST_BYTES:
+            raise HTTPException(
+                status_code=422,
+                detail="El payload supera el límite seguro de previsualización.",
+            )
+
+        token = secrets.token_urlsafe(24)
+        submitted_request = {
+            "backend": payload.backend,
+            "provider": payload.provider,
+            "model": payload.model,
+            "system_instruction": payload.system_instruction,
+            "user_query": payload.user_query,
+        }
+        preview = {
+            "selection": selection,
+            "chat_request": chat_request,
+            "submitted_request": submitted_request,
+            "payload": provider_payload,
+            "payload_sha256": hashlib.sha256(
+                serialized_payload.encode("utf-8")
+            ).hexdigest(),
+            "expires_at": time.monotonic() + _GHOSTWRITER_PREVIEW_TTL_SECONDS,
+        }
+        with request.app.state.ghostwriter_preview_lock:
+            _clean_ghostwriter_previews(request)
+            previews = request.app.state.ghostwriter_previews
+            if len(previews) >= _MAX_GHOSTWRITER_PREVIEWS:
+                oldest = min(
+                    previews,
+                    key=lambda key: previews[key]["expires_at"],
+                )
+                previews.pop(oldest, None)
+            previews[token] = preview
+
+        return {
+            "token": token,
+            "provider": selection.provider,
+            "model": selection.model,
+            "payload": provider_payload,
+            "payload_sha256": preview["payload_sha256"],
+            "expires_in_seconds": _GHOSTWRITER_PREVIEW_TTL_SECONDS,
+        }
 
     @app.get(
         "/api/ghostwriter/reddit-feed",
@@ -1574,8 +1853,125 @@ def create_app(
         payload: GhostWriterRequest,
         request: Request,
     ) -> GhostWriterResponse:
-        model = _ollama_model(payload.backend)
-        is_cloud = payload.backend == "cloud"
+        if payload.preview_token is not None:
+            preview = _consume_ghostwriter_preview(
+                payload.preview_token,
+                request,
+            )
+            submitted_request = {
+                "backend": payload.backend,
+                "provider": payload.provider,
+                "model": payload.model,
+                "system_instruction": payload.system_instruction,
+                "user_query": payload.user_query,
+            }
+            if submitted_request != preview["submitted_request"]:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "La petición cambió desde la vista previa. "
+                        "Previsualiza de nuevo antes de enviar."
+                    ),
+                )
+            if not payload.confirm_remote:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Envío remoto cancelado; no se envió nada.",
+                )
+            selection = preview["selection"]
+            remote = True
+            chat_request = preview["chat_request"]
+            provider_client = get_provider(
+                selection.provider,
+                ollama_client=(
+                    _make_ollama_client(request.app.state.ollama_client_factory)
+                    if selection.provider == "ollama"
+                    else None
+                ),
+            )
+        elif payload.provider is not None:
+            if payload.model is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Selecciona un modelo para el proveedor elegido.",
+                )
+            selection = ModelSelection(payload.provider, payload.model)
+            remote = selection.provider != "ollama" or _is_cloud_model(
+                selection.model
+            )
+            if remote:
+                raise HTTPException(
+                    status_code=428,
+                    detail=(
+                        "Previsualiza el payload exacto antes de confirmar el "
+                        f"envío a {selection.provider} ({selection.model})."
+                    ),
+                )
+            chat_request = _ghostwriter_chat_request(
+                selection,
+                payload.system_instruction,
+                payload.user_query,
+            )
+            provider_client = get_provider(
+                selection.provider,
+                ollama_client=(
+                    _make_ollama_client(request.app.state.ollama_client_factory)
+                    if selection.provider == "ollama"
+                    else None
+                ),
+            )
+        if payload.preview_token is not None or payload.provider is not None:
+            try:
+                text = await run_in_threadpool(provider_client.complete, chat_request)
+            except (ProviderError, ProviderCredentialsError) as exc:
+                LOGGER.warning(
+                    "%s generation failed (%s)",
+                    selection.provider,
+                    type(exc).__name__,
+                )
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except (httpx.HTTPError, OSError, ollama.RequestError, ollama.ResponseError) as exc:
+                LOGGER.warning(
+                    "%s generation failed (%s): %s",
+                    selection.provider,
+                    type(exc).__name__,
+                    _safe_ollama_error(exc),
+                )
+                detail = (
+                    _ollama_failure_detail(exc, selection.model)
+                    if selection.provider == "ollama"
+                    else (
+                        f"No se pudo completar la generación con "
+                        f"{selection.provider} ({selection.model})."
+                    )
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=detail,
+                ) from exc
+            if not text.strip():
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"{selection.provider} devolvió una respuesta vacía.",
+                )
+            if len(text) > _MAX_RESPONSE_TEXT:
+                raise HTTPException(
+                    status_code=502,
+                    detail="El proveedor devolvió un texto que supera el límite.",
+                )
+            return GhostWriterResponse(text=text.strip())
+
+        backend = payload.backend or "local"
+        if backend == "cloud":
+            raise HTTPException(
+                status_code=428,
+                detail=(
+                    "El envío a Ollama Cloud requiere previsualizar y confirmar "
+                    "el payload antes de generar."
+                ),
+            )
+        model = _ollama_model(backend)
+        is_cloud = backend == "cloud"
         context_setting = (
             "GHOSTWRITER_CLOUD_NUM_CTX"
             if is_cloud
@@ -1853,6 +2249,84 @@ def _prune_project_hub_previews(
     ]
     for token in expired:
         previews.pop(token, None)
+
+
+def _clean_ghostwriter_previews(request: Request) -> None:
+    now = time.monotonic()
+    previews = request.app.state.ghostwriter_previews
+    expired = [
+        token
+        for token, preview in previews.items()
+        if preview["expires_at"] <= now
+    ]
+    for token in expired:
+        previews.pop(token, None)
+
+
+def _consume_ghostwriter_preview(
+    token: str,
+    request: Request,
+) -> dict[str, Any]:
+    with request.app.state.ghostwriter_preview_lock:
+        _clean_ghostwriter_previews(request)
+        preview = request.app.state.ghostwriter_previews.pop(token, None)
+    if preview is None:
+        raise HTTPException(
+            status_code=409,
+            detail="La vista previa expiró, no es válida o ya fue utilizada.",
+        )
+    return preview
+
+
+def _ghostwriter_chat_request(
+    selection: ModelSelection,
+    system_instruction: str,
+    user_query: str,
+) -> ChatRequest:
+    remote = selection.provider != "ollama" or _is_cloud_model(selection.model)
+    predict_setting = (
+        "GHOSTWRITER_CLOUD_NUM_PREDICT"
+        if remote
+        else "GHOSTWRITER_NUM_PREDICT"
+    )
+    max_predict = _MAX_CLOUD_PREDICT if remote else _MAX_LOCAL_PREDICT
+    context_setting = (
+        "GHOSTWRITER_CLOUD_NUM_CTX"
+        if remote
+        else "GHOSTWRITER_NUM_CTX"
+    )
+    return ChatRequest(
+        selection=selection,
+        messages=(
+            ChatMessage("system", system_instruction),
+            ChatMessage("user", user_query),
+        ),
+        temperature=0.55,
+        max_tokens=_integer_environment(
+            predict_setting,
+            8192 if remote else 2048,
+            64,
+            max_predict,
+        ),
+        keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "0")
+        if selection.provider == "ollama"
+        else None,
+        provider_options=(
+            {
+                "num_ctx": _integer_environment(
+                    context_setting,
+                    32768 if remote else 4096,
+                    512,
+                    _MAX_CONTEXT,
+                ),
+                "repeat_penalty": 1.18,
+                "repeat_last_n": 128,
+                **_optional_thread_setting(),
+            }
+            if selection.provider == "ollama"
+            else {}
+        ),
+    )
 
 
 def _plan_obsidian_uri(vault: Path, relative_path: str) -> str:
@@ -2558,6 +3032,24 @@ def _asset_path(root: Path, application: str) -> Path:
         raise ValueError("Aplicación web no soportada.") from exc
 
 
+def _ghostwriter_provider() -> Literal["ollama", "groq", "openrouter"]:
+    provider = os.getenv("GHOSTWRITER_PROVIDER", "ollama").strip().casefold()
+    if provider not in {"ollama", "groq", "openrouter"}:
+        raise HTTPException(
+            status_code=500,
+            detail="GHOSTWRITER_PROVIDER debe ser ollama, groq u openrouter.",
+        )
+    return provider  # type: ignore[return-value]
+
+
+def _ghostwriter_default_model() -> str:
+    configured = os.getenv("GHOSTWRITER_MODEL", "").strip()
+    if configured:
+        return configured
+    provider = _ghostwriter_provider()
+    return _ollama_model("local") if provider == "ollama" else ""
+
+
 def _ollama_model(backend: Literal["local", "cloud"]) -> str:
     if backend == "cloud":
         model = os.getenv(
@@ -2830,6 +3322,62 @@ class _RequestSizeLimitMiddleware:
         response = JSONResponse(
             status_code=413,
             content={"detail": "La petición supera el tamaño permitido."},
+        )
+        await response(scope, receive, send)
+
+
+class _SameOriginApiMiddleware:
+    """Reject browser-originated cross-site requests to local API routes."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        origin_header = headers.get(b"origin")
+        fetch_site = headers.get(b"sec-fetch-site", b"").lower()
+        if origin_header is not None:
+            try:
+                origin = urlsplit(origin_header.decode("latin-1"))
+            except ValueError:
+                await self._send_forbidden(scope, receive, send)
+                return
+            host = headers.get(b"host", b"").decode("latin-1")
+            if (
+                origin.scheme != scope.get("scheme")
+                or origin.netloc.casefold() != host.casefold()
+                or origin.path not in {"", "/"}
+                or origin.query
+                or origin.fragment
+                or origin.username
+                or origin.password
+            ):
+                await self._send_forbidden(scope, receive, send)
+                return
+        elif fetch_site == b"cross-site":
+            await self._send_forbidden(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    async def _send_forbidden(
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        response = JSONResponse(
+            status_code=403,
+            content={"detail": "Las peticiones API deben proceder del mismo origen."},
         )
         await response(scope, receive, send)
 

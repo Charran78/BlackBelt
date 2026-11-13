@@ -391,6 +391,42 @@ select[multiple] {
   overflow-wrap: anywhere;
 }
 
+dialog.review-dialog {
+  width: min(900px, calc(100vw - 28px));
+  max-height: calc(100vh - 28px);
+  padding: 20px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 45%);
+}
+
+dialog.review-dialog::backdrop {
+  background: rgb(2 8 15 / 78%);
+  backdrop-filter: blur(3px);
+}
+
+.review-dialog form {
+  display: grid;
+  gap: 12px;
+}
+
+.review-dialog h2 {
+  margin: 0;
+}
+
+.review-dialog .panorama-diff {
+  max-height: 55vh;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .panorama-review-actions {
   display: flex;
   flex-wrap: wrap;

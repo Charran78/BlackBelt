@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -44,6 +45,24 @@ def _asset_root(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return tmp_path
+
+
+def _confirm_remote_ghostwriter_request(
+    client: TestClient,
+    payload: dict[str, Any],
+) -> tuple[httpx.Response, httpx.Response]:
+    preview = client.post("/api/ghostwriter/preview", json=payload)
+    assert preview.status_code == 200, preview.text
+    confirmed_payload = {
+        **payload,
+        "confirm_remote": True,
+        "preview_token": preview.json()["token"],
+    }
+    response = client.post(
+        "/api/ghostwriter/generate",
+        json=confirmed_payload,
+    )
+    return preview, response
 
 
 def _web_plan(plan_id: str = "PLAN-001") -> dict[str, Any]:
@@ -453,7 +472,7 @@ def test_plan_pwa_serves_local_shell_without_caching_vault_data() -> None:
     assert "@media print" in styles.text
     assert ".detail-actions" in styles.text
     assert ".detail-panel" in styles.text
-    assert 'CACHE_NAME = "plan-shell-v8"' in worker.text
+    assert 'CACHE_NAME = "plan-shell-v9"' in worker.text
     assert 'id="project-id"' in page.text
     assert 'id="proposal-ids"' in page.text
     assert 'id="meeting-ids"' in page.text
@@ -789,6 +808,10 @@ def test_plan_prepare_api_returns_model_collection_warnings(
         "meetings": ["RE001", "RE002"],
         "dossiers": ["CL001_2026-10-07_01"],
         "engine": "local",
+        "provider": None,
+        "model": None,
+        "confirm_remote": False,
+        "expected_request_hash": None,
     }
     prepare_arguments.clear()
     omitted_sources = client.post(
@@ -857,7 +880,8 @@ def test_html_pages_link_static_manifests_and_register_scoped_workers() -> None:
     assert 'id="radar-news-grid"' in ghostwriter_html
     assert 'id="standalone-aspect-ratio"' in ghostwriter_html
     assert 'id="select-ai-backend"' in ghostwriter_html
-    assert "window.confirm(" in ghostwriter_html
+    assert "/api/ghostwriter/preview" in ghostwriter_html
+    assert 'id="remote-preview-payload"' in ghostwriter_html
     assert "Ollama Cloud" in ghostwriter_html
     assert "function generateContentFlow()" in ghostwriter_html
     assert "no reutilices ejemplos o frases" in ghostwriter_html.lower()
@@ -1182,6 +1206,9 @@ def test_generation_uses_cloud_only_when_explicitly_selected(
     monkeypatch.delenv("GHOSTWRITER_CLOUD_NUM_PREDICT", raising=False)
 
     class FakeClient:
+        def list(self) -> dict[str, Any]:
+            return {"models": [{"name": "gpt-oss:120b-cloud"}]}
+
         def chat(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"message": {"content": "Borrador Cloud"}}
@@ -1190,9 +1217,9 @@ def test_generation_uses_cloud_only_when_explicitly_selected(
         create_app(ollama_client_factory=FakeClient),
         base_url="http://127.0.0.1",
     )
-    response = client.post(
-        "/api/ghostwriter/generate",
-        json={
+    preview, response = _confirm_remote_ghostwriter_request(
+        client,
+        {
             "backend": "cloud",
             "system_instruction": "Escribe en español.",
             "user_query": "Escribe sobre Ollama.",
@@ -1200,6 +1227,8 @@ def test_generation_uses_cloud_only_when_explicitly_selected(
     )
 
     assert response.status_code == 200
+    assert preview.json()["provider"] == "ollama"
+    assert preview.json()["model"] == "gpt-oss:120b-cloud"
     assert response.json() == {"text": "Borrador Cloud"}
     assert captured["model"] == "gpt-oss:120b-cloud"
     assert captured["options"]["num_ctx"] == 32768
@@ -1214,6 +1243,9 @@ def test_cloud_generation_limits_are_configurable(
     monkeypatch.setenv("GHOSTWRITER_CLOUD_NUM_PREDICT", "12000")
 
     class FakeClient:
+        def list(self) -> dict[str, Any]:
+            return {"models": [{"name": "gpt-oss:120b-cloud"}]}
+
         def chat(self, **kwargs: Any) -> dict[str, Any]:
             captured.update(kwargs)
             return {"message": {"content": "Borrador Cloud"}}
@@ -1222,9 +1254,9 @@ def test_cloud_generation_limits_are_configurable(
         create_app(ollama_client_factory=FakeClient),
         base_url="http://127.0.0.1",
     )
-    response = client.post(
-        "/api/ghostwriter/generate",
-        json={
+    _preview, response = _confirm_remote_ghostwriter_request(
+        client,
+        {
             "backend": "cloud",
             "system_instruction": "Escribe en español.",
             "user_query": "Escribe una newsletter extensa.",
@@ -1240,6 +1272,9 @@ def test_cloud_response_accepts_longer_drafts() -> None:
     long_draft = "Borrador largo. " * 2000
 
     class FakeClient:
+        def list(self) -> dict[str, Any]:
+            return {"models": [{"name": "gpt-oss:120b-cloud"}]}
+
         def chat(self, **kwargs: Any) -> dict[str, Any]:
             return {"message": {"content": long_draft}}
 
@@ -1247,9 +1282,9 @@ def test_cloud_response_accepts_longer_drafts() -> None:
         create_app(ollama_client_factory=FakeClient),
         base_url="http://127.0.0.1",
     )
-    response = client.post(
-        "/api/ghostwriter/generate",
-        json={
+    _preview, response = _confirm_remote_ghostwriter_request(
+        client,
+        {
             "backend": "cloud",
             "system_instruction": "Escribe en español.",
             "user_query": "Escribe una newsletter extensa.",
@@ -1280,11 +1315,212 @@ def test_ghostwriter_config_reports_local_and_cloud_models(
     assert response.json() == {
         "local_model": "qwen2.5:1.5b",
         "cloud_model": "gemma4:31b-cloud",
+        "provider": "ollama",
+        "model": "qwen2.5:1.5b",
         "author_name": "Autora local",
         "author_handle": "@autora",
         "publication_name": "Mi newsletter",
         "default_tags": "#tech #ia",
     }
+
+
+def test_remote_provider_requires_confirmation_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[Any] = []
+
+    class FakeProvider:
+        def complete(self, request: Any) -> str:
+            calls.append(request)
+            return "draft"
+
+    monkeypatch.setattr(
+        "blackbelt.webapps.get_provider",
+        lambda *_args, **_kwargs: FakeProvider(),
+    )
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    response = client.post(
+        "/api/ghostwriter/generate",
+        json={
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "system_instruction": "Escribe en español.",
+            "user_query": "Redacta esto.",
+        },
+    )
+
+    assert response.status_code == 428
+    assert calls == []
+
+
+def test_ghostwriter_uses_explicit_provider_and_model_after_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    captured: list[Any] = []
+
+    class FakeProvider:
+        def preview_payload(self, request: Any) -> dict[str, Any]:
+            return {
+                "model": request.selection.model,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ],
+            }
+
+        def complete(self, request: Any) -> str:
+            captured.append(request)
+            return "Borrador remoto"
+
+    monkeypatch.setattr(
+        "blackbelt.webapps.discover_models",
+        lambda provider, **_kwargs: [
+            ModelInfo(provider=provider, model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr(
+        "blackbelt.webapps.get_provider",
+        lambda *_args, **_kwargs: FakeProvider(),
+    )
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    preview, response = _confirm_remote_ghostwriter_request(
+        client,
+        {
+            "provider": "groq",
+            "model": "openai/gpt-oss-120b",
+            "system_instruction": "Escribe en español.",
+            "user_query": "Redacta esto.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "Borrador remoto"}
+    assert preview.json()["payload"]["messages"][1]["content"] == "Redacta esto."
+    assert captured[0].selection.provider == "groq"
+    assert captured[0].selection.model == "openai/gpt-oss-120b"
+
+
+def test_ghostwriter_preview_is_bound_to_exact_payload_and_consumed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    calls: list[Any] = []
+
+    class FakeProvider:
+        def preview_payload(self, request: Any) -> dict[str, Any]:
+            return {
+                "model": request.selection.model,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ],
+            }
+
+        def complete(self, request: Any) -> str:
+            calls.append(request)
+            return "Borrador remoto"
+
+    monkeypatch.setattr(
+        "blackbelt.webapps.discover_models",
+        lambda provider, **_kwargs: [
+            ModelInfo(provider=provider, model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr(
+        "blackbelt.webapps.get_provider",
+        lambda *_args, **_kwargs: FakeProvider(),
+    )
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+    payload = {
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "system_instruction": "Escribe en español.",
+        "user_query": "Redacta esto.",
+    }
+    preview = client.post("/api/ghostwriter/preview", json=payload)
+    assert preview.status_code == 200
+    assert preview.headers["cache-control"] == "no-store"
+    token = preview.json()["token"]
+
+    changed_payload = {
+        **payload,
+        "user_query": "Envía otra petición.",
+        "confirm_remote": True,
+        "preview_token": token,
+    }
+    changed_response = client.post(
+        "/api/ghostwriter/generate",
+        json=changed_payload,
+    )
+    assert changed_response.status_code == 409
+    assert calls == []
+
+    replay_response = client.post(
+        "/api/ghostwriter/generate",
+        json={
+            **payload,
+            "confirm_remote": True,
+            "preview_token": token,
+        },
+    )
+    assert replay_response.status_code == 409
+    assert calls == []
+
+
+def test_provider_catalog_response_never_exposes_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    monkeypatch.setattr(
+        "blackbelt.webapps.discover_models",
+        lambda provider, **_kwargs: [
+            ModelInfo(provider=provider, model="openai/gpt-oss-120b")
+        ],
+    )
+    monkeypatch.setattr("blackbelt.webapps.has_api_key", lambda _provider: True)
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    response = client.get("/api/providers/groq/models")
+
+    assert response.status_code == 200
+    assert response.json()["credential_configured"] is True
+    assert "api_key" not in response.text
+    assert "secret" not in response.text
+
+
+def test_provider_api_rejects_cross_origin_browser_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blackbelt.providers.chat import ModelInfo
+
+    calls: list[str] = []
+
+    def discover(provider: str, **_kwargs: Any) -> list[ModelInfo]:
+        calls.append(provider)
+        return [ModelInfo(provider=provider, model="openai/gpt-oss-120b")]
+
+    monkeypatch.setattr("blackbelt.webapps.discover_models", discover)
+    monkeypatch.setattr("blackbelt.webapps.has_api_key", lambda _provider: True)
+    client = TestClient(create_app(), base_url="http://127.0.0.1")
+
+    rejected = client.get(
+        "/api/providers/groq/models",
+        headers={"origin": "https://attacker.example"},
+    )
+    accepted = client.get(
+        "/api/providers/groq/models",
+        headers={"origin": "http://127.0.0.1"},
+    )
+
+    assert rejected.status_code == 403
+    assert accepted.status_code == 200
+    assert calls == ["groq"]
 
 
 def test_reddit_feed_returns_safe_previews_and_caches_results(
@@ -1603,6 +1839,9 @@ def test_cloud_errors_explain_authentication_and_quota(
     )
 
     class FakeClient:
+        def list(self) -> dict[str, Any]:
+            return {"models": [{"name": "gpt-oss:120b-cloud"}]}
+
         def chat(self, **kwargs: Any) -> None:
             raise ollama.ResponseError(error_message, status_code=status_code)
 
@@ -1610,9 +1849,9 @@ def test_cloud_errors_explain_authentication_and_quota(
         create_app(ollama_client_factory=FakeClient),
         base_url="http://127.0.0.1",
     )
-    response = client.post(
-        "/api/ghostwriter/generate",
-        json={
+    _preview, response = _confirm_remote_ghostwriter_request(
+        client,
+        {
             "backend": "cloud",
             "system_instruction": "Sistema",
             "user_query": "Consulta",
